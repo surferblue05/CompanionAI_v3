@@ -226,43 +226,57 @@ namespace CompanionAI_v3.Planning.LLM
                 yield break;
             }
 
+            // ★ v3.114.0 (Phase F.2 review): try/finally guarantees Dispose + callback exactly once
+            // even if SendWebRequest throws. Caller latch invariant (_isXing) depends on this.
             float startTime = Time.realtimeSinceStartup;
-            yield return req.SendWebRequest();
-            float elapsed = Time.realtimeSinceStartup - startTime;
-
-            Response response;
-            if (req.result == UnityWebRequest.Result.Success)
+            Response response = default(Response);
+            bool callbackFired = false;
+            try
             {
-                response = new Response
+                yield return req.SendWebRequest();
+                float elapsed = Time.realtimeSinceStartup - startTime;
+
+                if (req.result == UnityWebRequest.Result.Success)
                 {
-                    Success = true,
-                    RawJson = req.downloadHandler?.text,
-                    ErrorMessage = null,
-                    HttpStatusCode = (int)req.responseCode,
-                    ElapsedSeconds = elapsed,
-                    WasTimeout = false
-                };
+                    response = new Response
+                    {
+                        Success = true,
+                        RawJson = req.downloadHandler?.text,
+                        ErrorMessage = null,
+                        HttpStatusCode = (int)req.responseCode,
+                        ElapsedSeconds = elapsed,
+                        WasTimeout = false
+                    };
+                }
+                else
+                {
+                    bool wasTimeout =
+                        req.result == UnityWebRequest.Result.ConnectionError &&
+                        !string.IsNullOrEmpty(req.error) &&
+                        req.error.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                    response = new Response
+                    {
+                        Success = false,
+                        RawJson = req.downloadHandler?.text,
+                        ErrorMessage = req.error,
+                        HttpStatusCode = (int)req.responseCode,
+                        ElapsedSeconds = elapsed,
+                        WasTimeout = wasTimeout
+                    };
+                }
             }
-            else
+            finally
             {
-                bool wasTimeout =
-                    req.result == UnityWebRequest.Result.ConnectionError &&
-                    !string.IsNullOrEmpty(req.error) &&
-                    req.error.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                response = new Response
+                // Always dispose, always invoke callback exactly once (caller latch invariant)
+                if (req != null) req.Dispose();
+                if (!callbackFired)
                 {
-                    Success = false,
-                    RawJson = req.downloadHandler?.text,
-                    ErrorMessage = req.error,
-                    HttpStatusCode = (int)req.responseCode,
-                    ElapsedSeconds = elapsed,
-                    WasTimeout = wasTimeout
-                };
+                    callbackFired = true;
+                    try { onComplete?.Invoke(response); }
+                    catch (Exception cbEx) { Main.LogDebug($"[LLMHttpClient] onComplete threw: {cbEx.Message}"); }
+                }
             }
-
-            req.Dispose();
-            onComplete?.Invoke(response);
         }
 
         // ═══════════════════════════════════════════════════════════
