@@ -12,6 +12,8 @@ using Kingmaker.UnitLogic.Abilities;          // AbilityData
 using Kingmaker.UnitLogic.Progression.Paths;  // BlueprintCareerPath (Archetype)
 using Kingmaker.UnitLogic.Squads;             // PartSquadExtension.GetSquadOptional (IsExtraTurn)
 using Kingmaker.View.Covers;                  // LosCalculations.CoverType
+using Pathfinding;                             // GraphNode (EnemyMoveCache)
+using Kingmaker.Pathfinding;                   // CustomGridNodeBase (Vector3Position)
 
 namespace CompanionAI_v3.GameInterface
 {
@@ -147,32 +149,66 @@ namespace CompanionAI_v3.GameInterface
         }
 
         /// <summary>
-        /// ★ v3.110.20: 적이 이 턴에 특정 위치를 공격 가능한 확률 (0 / 0.5 / 1).
-        /// 게임 패턴: threatRange + AP_Blue 기준.
-        ///   dist ≤ threatRange        → 1.0 (즉시 공격 가능)
-        ///   dist ≤ threatRange + AP   → 0.5 (이동 후 공격 가능)
-        ///   dist > threatRange + AP   → 0   (이 턴 안전)
-        /// 참조: AttackEffectivenessTileScorer.CalculateEnemyTargetThreatScore (decompile 195-215)
+        /// 적이 다음 턴에 targetPos 를 위협할 수 있는지 점수화 (0 / 0.5 / 1).
+        ///
+        /// 1순위 (정확): EnemyMoveCache — 게임의 AsyncUpdateEnemyMoveVariants 가
+        ///   사전 계산한 도달 가능 노드 리스트. 그 어떤 노드에서도 무기 사거리 안에
+        ///   targetPos 가 들어오면 위협 1.0, 못 들어오면 0.
+        ///
+        /// 2순위 (폴백 — 캐시 미스): 게임 자체 ProtectionTileScorer 공식 모방.
+        ///   다음 턴 시작 시 받을 MP (WarhammerInitialAPBlue.ModifiedValue) ÷
+        ///   타일당 MP 비용 (WarhammerMovementApPerCell) → 도달 가능 타일 수.
+        ///   현재 잔여 ActionPointsBlue 가 아님 — 턴제 게임에서 잔여값은 의미 없음.
+        ///
+        /// 이전 버그: ActionPointsBlue (현재 잔여) 를 타일처럼 더해서 사용 →
+        ///   적이 자기 턴 끝낸 후엔 항상 위협 0 으로 평가 → 다음 턴 둘러싸일 위치를
+        ///   "안전" 으로 평가하는 결정적 결함. 실세션 검증 (Argenta Hide=6.7 케이스).
         /// </summary>
         public static float GetEnemyTurnThreatScore(BaseUnitEntity enemy, UnityEngine.Vector3 targetPos)
         {
             if (enemy == null) return 0f;
-
             int threatRange = GetEnemyThreatRangeInTiles(enemy);
-            float apBlue = 0f;
+
+            // 1순위: 게임이 사전 계산한 도달 가능 노드 (정답 데이터)
+            var moveVariants = EnemyMoveCache.Get(enemy);
+            if (moveVariants != null && moveVariants.Count > 0)
+            {
+                foreach (var node in moveVariants)
+                {
+                    if (node == null) continue;
+                    UnityEngine.Vector3 nodePos;
+                    if (node is Kingmaker.Pathfinding.CustomGridNodeBase custom)
+                        nodePos = custom.Vector3Position;
+                    else
+                        nodePos = (UnityEngine.Vector3)node.position;
+
+                    float dist = GetDistanceInTiles(targetPos, nodePos);
+                    if (dist <= threatRange) return 1.0f;
+                }
+                return 0f;
+            }
+
+            // 2순위 폴백: 다음 턴 시작 MP 기준 (게임 ProtectionTileScorer 공식)
+            float maxMP = 0f;
+            float costPerCell = 1f;
             try
             {
-                apBlue = enemy.CombatState?.ActionPointsBlue ?? 0f;
+                var initialAP = enemy.CombatState?.WarhammerInitialAPBlue;
+                if (initialAP != null) maxMP = (float)initialAP.ModifiedValue;
+                else if (enemy.Blueprint != null) maxMP = (float)enemy.Blueprint.WarhammerInitialAPBlue;
+
+                if (enemy.Blueprint != null)
+                    costPerCell = enemy.Blueprint.WarhammerMovementApPerCell;
             }
             catch (Exception ex)
             {
-                if (Main.IsDebugEnabled)
-                    Main.LogWarning($"[CombatAPI] GetEnemyTurnThreatScore AP read failed for {enemy?.CharacterName}: {ex.Message}");
+                Main.LogError(ex, $"[CombatAPI] GetEnemyTurnThreatScore stat read failed for {enemy?.CharacterName}");
             }
 
+            int reachTiles = (int)(maxMP / UnityEngine.Mathf.Max(1f, costPerCell));
             int distCells = (int)System.Math.Ceiling(GetDistanceInTiles(targetPos, enemy));
             if (distCells <= threatRange) return 1.0f;
-            if (distCells <= threatRange + apBlue) return 0.5f;
+            if (distCells <= threatRange + reachTiles) return 0.5f;
             return 0f;
         }
 
