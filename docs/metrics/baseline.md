@@ -18,4 +18,4 @@ bash scripts/code-metrics.sh
 diff docs/metrics/baseline-2026-04-28.md <(bash scripts/code-metrics.sh)
 ```
 
-(노트: Phase 0+6 마스터 플랜 — `docs/plans/2026-04-28-code-hygiene-master-plan.md`)
+(노트: Phase 0+6 마스터 플랜 — [2026-04-28-code-hygiene-master-plan.md](../plans/2026-04-28-code-hygiene-master-plan.md))

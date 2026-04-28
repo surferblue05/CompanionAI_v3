@@ -6,7 +6,7 @@
 # 출력: stdout 에 메트릭 표 (Markdown).
 # 의존: bash, find, grep, awk, wc.
 
-set -euo pipefail
+set -eu
 cd "$(git rev-parse --show-toplevel)"
 
 DATE=$(date +%Y-%m-%d)
@@ -95,6 +95,6 @@ cat <<EOF
 | catch (Exception) total | $CATCH_TOTAL | |
 | Silent catch (LogDebug+ex.Message) | $SILENT | Phase 1 타깃 |
 | ★ vX.Y inline markers | $MARKERS | Phase 4 자연 소멸 |
-| Deep nested if (16+ indent) | $DEEP_IF | Phase 5 점진 |
+| Indented if (16+ spaces) | $DEEP_IF | Phase 5 점진 — 향후 20+ 임계값 검토 |
 | Main.Log* flat calls | $MAIN_LOG | Phase 2 카테고리화 타깃 |
 EOF
