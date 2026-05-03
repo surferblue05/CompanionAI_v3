@@ -85,6 +85,34 @@ namespace CompanionAI_v3.GameInterface
             bool isScatter = CombatAPI.IsScatterAttack(primaryAttack);
             bool isMelee = primaryAttack?.IsMelee ?? false;
 
+            // ★ v3.116.9 옵션 B 수정: primaryAttack 이 단일 타겟이어도 unit 이 Cone/Burst/Ray 능력을
+            //   별도로 보유하면 그 능력으로 위치별 AoE 커버리지 평가. 카시아처럼 primary="타격"인 경우에도
+            //   진짜 ranged AoE (볼터 burst Cone, 사이커 Cone 주문, 화염방사기 Ray 등) 가 있으면 위치 점수에 반영.
+            //   GetAvailableAbilities 는 unit.Abilities.RawFacts 기반 — 무기 공격 + 스킬 + 주문 모두 포함.
+            //   다중 AoE 능력 보유 시 모두 평가 후 MAX coverage 사용 (최적 무기/스킬 선택 가정).
+            //   meleeAoEAbility (FindMeleeAttackPositionSync) 패턴 모방 + 다중 능력 지원으로 확장.
+            List<AbilityData> rangedAoEAbilities = null;
+            {
+                var availableAbilities = CombatAPI.GetAvailableAbilities(unit);
+                if (availableAbilities != null)
+                {
+                    foreach (var ab in availableAbilities)
+                    {
+                        if (ab == null || ab.IsMelee) continue;
+                        if (CombatAPI.IsDirectionalPattern(CombatAPI.GetPatternType(ab)))
+                        {
+                            if (rangedAoEAbilities == null) rangedAoEAbilities = new List<AbilityData>();
+                            rangedAoEAbilities.Add(ab);
+                        }
+                    }
+                }
+            }
+            if (rangedAoEAbilities != null && Main.IsDebugEnabled)
+            {
+                var names = string.Join(", ", rangedAoEAbilities.ConvertAll(a => a.Name));
+                Log.Engine.Debug($"[MovementAPI] {unit.CharacterName}: Ranged AoE abilities for coverage scoring ({rangedAoEAbilities.Count}): {names}");
+            }
+
             // ★ v3.8.70: 안전 체크용 아군 목록
             // ★ v3.9.24: DangerousAoE도 아군 안전 체크 필요 (Cone/Ray가 아군을 타격)
             //   CanTargetFriends=false라도 DangerousAoE는 AoE 범위 내 아군에 피해
@@ -171,32 +199,35 @@ namespace CompanionAI_v3.GameInterface
                     }
                 }
 
-                // ★ v3.116.8 옵션 B: 원거리 AoE Coverage Score (Cone/Ray/Sector).
+                // ★ v3.116.8 옵션 B / v3.116.9 fix: 원거리 AoE Coverage Score (Cone/Ray/Sector).
                 //   단발 사격 평가에 묻히던 "Cone 5명 vs 1명" 차이를 위치 점수에 명시 반영.
                 //   가장 가까운 살아있는 적을 패턴 조준점으로 잡고, 그 패턴 안에 추가로 잡히는 적 수에 보너스.
                 //   MeleeAoESplashBonus (v3.8.50, FindMeleeAttackPositionSync) 의 ranged 대응판 — 동일 가중치 12.
                 //   단일 적만 잡히는 위치(splash<2)는 보너스 0 — AttackScore 가 이미 처리.
-                if (primaryAttack != null && !primaryAttack.IsMelee && enemies != null
-                    && score.HittableEnemyCount > 0)
+                //   v3.116.9: rangedAoEAbilities (primary 와 별개 탐색, 무기+스킬 모두 포함) 사용.
+                //   다중 AoE 능력 보유 시 각각 평가 후 MAX coverage 사용 — 캐릭터가 그 위치에서 사용 가능한
+                //   최적 AoE 능력 기준으로 점수화.
+                if (rangedAoEAbilities != null && enemies != null && score.HittableEnemyCount > 0)
                 {
-                    var patternType = CombatAPI.GetPatternType(primaryAttack);
-                    if (patternType.HasValue && CombatAPI.IsDirectionalPattern(patternType))
+                    BaseUnitEntity coneTarget = null;
+                    float minDist = float.MaxValue;
+                    foreach (var enemy in enemies)
                     {
-                        BaseUnitEntity coneTarget = null;
-                        float minDist = float.MaxValue;
-                        foreach (var enemy in enemies)
-                        {
-                            if (enemy == null || enemy.LifeState.IsDead) continue;
-                            float d = Vector3.Distance(score.Position, enemy.Position);
-                            if (d < minDist) { minDist = d; coneTarget = enemy; }
-                        }
-                        if (coneTarget != null)
+                        if (enemy == null || enemy.LifeState.IsDead) continue;
+                        float d = Vector3.Distance(score.Position, enemy.Position);
+                        if (d < minDist) { minDist = d; coneTarget = enemy; }
+                    }
+                    if (coneTarget != null)
+                    {
+                        int maxAoeCount = 0;
+                        for (int ai = 0; ai < rangedAoEAbilities.Count; ai++)
                         {
                             int aoeCount = CombatAPI.CountEnemiesInPattern(
-                                primaryAttack, coneTarget.Position, score.Position, enemies);
-                            if (aoeCount >= 2)
-                                score.AoeHitCountBonus = (aoeCount - 1) * 12f;
+                                rangedAoEAbilities[ai], coneTarget.Position, score.Position, enemies);
+                            if (aoeCount > maxAoeCount) maxAoeCount = aoeCount;
                         }
+                        if (maxAoeCount >= 2)
+                            score.AoeHitCountBonus = (maxAoeCount - 1) * 12f;
                     }
                 }
 
