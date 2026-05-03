@@ -229,9 +229,12 @@ namespace CompanionAI_v3.GameInterface
                 //   MeleeAoESplashBonus (v3.8.50, FindMeleeAttackPositionSync) 의 ranged 대응판 — 동일 가중치 12.
                 //   단일 적만 잡히는 위치(splash<2)는 보너스 0 — AttackScore 가 이미 처리.
                 //   v3.116.9: rangedAoEAbilities (primary 와 별개 탐색, 무기+스킬 모두 포함) 사용.
-                //   다중 AoE 능력 보유 시 각각 평가 후 MAX coverage 사용 — 캐릭터가 그 위치에서 사용 가능한
-                //   최적 AoE 능력 기준으로 점수화.
-                if (rangedAoEAbilities != null && enemies != null && score.HittableEnemyCount > 0)
+                //   다중 AoE 능력 보유 시 각각 평가 후 MAX coverage 사용.
+                //   v3.116.11: HittableEnemyCount > 0 가드 제거. 단일 사격 LOS+사거리 와 Cone coverage 는 별개:
+                //   카시아 "눈꺼풀 없는 응시" (R=10, A=90) 같은 wide Cone 은 단일 사격 hittable=0 위치에서도
+                //   적을 잡을 수 있음. 가드는 옵션 B 의 핵심 가치를 차단함.
+                //   대체 가드: 위치 근처에 살아있는 적 1명이라도 있으면 평가 (사실상 모든 케이스).
+                if (rangedAoEAbilities != null && enemies != null)
                 {
                     BaseUnitEntity coneTarget = null;
                     float minDist = float.MaxValue;
@@ -362,12 +365,15 @@ namespace CompanionAI_v3.GameInterface
                         $"Osc=-{best.OscillationPenalty:F1}, " +
                         $"Exposure=-{best.ExposureScore:F1}");
 
-                    // ★ v3.116.10 진단: AoE 측정 결과 — splash<2 인 케이스 가시화
-                    if (best.BestAoeAbility != null)
+                    // ★ v3.116.10/11 진단: AoE 측정 결과 — rangedAoEAbilities 가 있던 모든 케이스 로그
+                    //   (splash=0 이면 ability=null 도 가능 — 그것도 진단 정보)
+                    if (rangedAoEAbilities != null)
                     {
-                        Log.Engine.Debug($"[MovementAPI] Best AoE diagnostic: ability={best.BestAoeAbility.Name}, " +
-                            $"splash={best.BestAoeSplash}, bonus={best.AoeHitCountBonus:F1} " +
-                            $"(splash<2 = no bonus by design — narrow pattern or single target alone in cone)");
+                        var aoeDiag = best.BestAoeAbility != null
+                            ? $"ability={best.BestAoeAbility.Name}, splash={best.BestAoeSplash}"
+                            : $"all {rangedAoEAbilities.Count} AoE abilities returned splash=0";
+                        Log.Engine.Debug($"[MovementAPI] Best AoE diagnostic: {aoeDiag}, " +
+                            $"bonus={best.AoeHitCountBonus:F1} (Best at ({best.Position.x:F1},{best.Position.z:F1}), hittable={best.HittableEnemyCount})");
                     }
 
                     // ★ v3.110.16: InfluenceMap@Best 진단 로그 제거 — InfT/InfC 축 자체가 사라짐.
