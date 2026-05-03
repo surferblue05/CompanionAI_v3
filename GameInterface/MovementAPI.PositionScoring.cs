@@ -49,6 +49,14 @@ namespace CompanionAI_v3.GameInterface
             /// <summary>★ v3.8.50: 근접 AOE 스플래시 보너스 (패턴 내 추가 적 수 기반)</summary>
             public float MeleeAoESplashBonus { get; set; }
 
+            /// <summary>
+            /// ★ v3.116.8 옵션 B: 원거리 AoE (Cone/Ray/Sector/Burst) 다중 타격 커버리지 보너스.
+            /// 이 위치에서 가장 가까운 적을 향해 패턴을 시뮬했을 때 잡히는 추가 적 수 × 가중치.
+            /// 단발 사격 평가에 묻혀 Cone 5명 자리가 1명 자리와 ~8점만 차이나던 문제 해결.
+            /// MeleeAoESplashBonus 의 ranged 대응판 — 동일 가중치 (12) 사용.
+            /// </summary>
+            public float AoeHitCountBonus { get; set; }
+
             /// <summary>★ v3.9.02: 아군 밀집 패널티 (AoE 취약성 방지 + 아군 AoE 방해 방지)</summary>
             public float AllyClusterPenalty { get; set; }
 
@@ -132,7 +140,8 @@ namespace CompanionAI_v3.GameInterface
                                        - ExposureScore
                                        + HideScore  // ★ v3.110.19 Phase 1a
                                        - (EnemyTurnThreatSum * 8f)  // ★ v3.110.20 Phase 2
-                                       + StayingAwayBonus;  // ★ v3.110.22 Phase 4
+                                       + StayingAwayBonus  // ★ v3.110.22 Phase 4
+                                       + AoeHitCountBonus;  // ★ v3.116.8 옵션 B: ranged AoE coverage
 
             public bool CanStand { get; set; }
             public bool HasLosToEnemy { get; set; }
@@ -146,6 +155,7 @@ namespace CompanionAI_v3.GameInterface
                 (PathRiskScore > 0 ? $" [Path:{PathRiskScore:F1}]" : "") +
                 (HitChanceBonus != 0 ? $" [Hit:{HitChanceBonus:F1}]" : "") +
                 (MeleeAoESplashBonus > 0 ? $" [Splash:{MeleeAoESplashBonus:F1}]" : "") +
+                (AoeHitCountBonus > 0 ? $" [AoeCov:+{AoeHitCountBonus:F1}]" : "") +
                 (AllyClusterPenalty > 0 ? $" [AllyCluster:-{AllyClusterPenalty:F1}]" : "") +
                 (FlankingScore > 0 ? $" [Flank:+{FlankingScore:F1}]" : "") +
                 (ExposureScore > 0 ? $" [Expo:-{ExposureScore:F1}]" : "") +

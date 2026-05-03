@@ -171,6 +171,35 @@ namespace CompanionAI_v3.GameInterface
                     }
                 }
 
+                // ★ v3.116.8 옵션 B: 원거리 AoE Coverage Score (Cone/Ray/Sector).
+                //   단발 사격 평가에 묻히던 "Cone 5명 vs 1명" 차이를 위치 점수에 명시 반영.
+                //   가장 가까운 살아있는 적을 패턴 조준점으로 잡고, 그 패턴 안에 추가로 잡히는 적 수에 보너스.
+                //   MeleeAoESplashBonus (v3.8.50, FindMeleeAttackPositionSync) 의 ranged 대응판 — 동일 가중치 12.
+                //   단일 적만 잡히는 위치(splash<2)는 보너스 0 — AttackScore 가 이미 처리.
+                if (primaryAttack != null && !primaryAttack.IsMelee && enemies != null
+                    && score.HittableEnemyCount > 0)
+                {
+                    var patternType = CombatAPI.GetPatternType(primaryAttack);
+                    if (patternType.HasValue && CombatAPI.IsDirectionalPattern(patternType))
+                    {
+                        BaseUnitEntity coneTarget = null;
+                        float minDist = float.MaxValue;
+                        foreach (var enemy in enemies)
+                        {
+                            if (enemy == null || enemy.LifeState.IsDead) continue;
+                            float d = Vector3.Distance(score.Position, enemy.Position);
+                            if (d < minDist) { minDist = d; coneTarget = enemy; }
+                        }
+                        if (coneTarget != null)
+                        {
+                            int aoeCount = CombatAPI.CountEnemiesInPattern(
+                                primaryAttack, coneTarget.Position, score.Position, enemies);
+                            if (aoeCount >= 2)
+                                score.AoeHitCountBonus = (aoeCount - 1) * 12f;
+                        }
+                    }
+                }
+
                 // ★ v3.74.2: 진동 방지 — 이전 위치 근처로 되돌아가면 패널티
                 if (lastMoveOrigin.HasValue)
                 {
@@ -264,7 +293,7 @@ namespace CompanionAI_v3.GameInterface
                         $"Distance={best.DistanceScore:F1}, " +
                         $"Threat=-{best.ThreatScore:F1}, TurnThreat=-{best.EnemyTurnThreatSum:F1}, " +
                         $"StayAway={best.StayingAwayScore:F2}({best.StayingAwayBonus:F1}), " +
-                        $"Attack={best.AttackScore:F1}, " +
+                        $"Attack={best.AttackScore:F1}, AoeCov={best.AoeHitCountBonus:F1}, " +
                         $"Hit={best.HitChanceBonus:F1}, Path=-{best.PathRiskScore:F1}, " +
                         $"AllyC=-{best.AllyClusterPenalty:F1}, Flank={best.FlankingScore:F1}, " +
                         $"Osc=-{best.OscillationPenalty:F1}, " +
