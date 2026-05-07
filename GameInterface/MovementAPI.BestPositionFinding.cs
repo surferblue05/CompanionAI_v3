@@ -34,7 +34,8 @@ namespace CompanionAI_v3.GameInterface
             float minSafeDistance = 5f,
             float predictedMP = 0f,
             AIRole role = AIRole.Auto,
-            Vector3? lastMoveOrigin = null)
+            Vector3? lastMoveOrigin = null,
+            CompanionAI_v3.Analysis.Situation situation = null)
         {
             // ★ v3.8.13: AI용 패스파인딩 사용 - 경로 위협 데이터(ProvokedAttacks, EnteredAoE) 포함
             var tiles = predictedMP > 0
@@ -89,6 +90,10 @@ namespace CompanionAI_v3.GameInterface
             //   별도로 보유하면 그 능력으로 위치별 AoE 커버리지 평가.
             //   v3.116.10: PatternInfo 기반 (CanBeDirectional + IsValid Radius>0) — WeaponRangeProfile 와 동일 기준.
             //   진단 로그 강화: 패턴 타입/반경/각도 + RawFacts 비교 (필터링 케이스 가시화).
+            // ★ v3.117.9 (옵션 A): 필터 확장 — Cone/Ray/Sector 만이 아니라 Sphere/Circle (수류탄),
+            //   Burst (Heavy Bolter BurstFire), Scatter (Shotgun) 모두 위치 평가 대상.
+            //   사용자 지적: 현재 AoE 인지 위치 선택은 Cone 만 — Argenta Burst 같은 케이스 누락.
+            //   게임 ability.IsAOE flag 가 sphere/circle/cone 통합 + IsBurst/IsScatter 별도 flag 추가.
             List<AbilityData> rangedAoEAbilities = null;
             List<CombatAPI.PatternInfo> rangedAoEPatternInfos = null;
             {
@@ -98,17 +103,23 @@ namespace CompanionAI_v3.GameInterface
                     foreach (var ab in availableAbilities)
                     {
                         if (ab == null || ab.IsMelee) continue;
+                        bool isAoEFamily = ab.IsAOE
+                            || CombatAPI.IsBurstAttack(ab)
+                            || CombatAPI.IsScatterAttack(ab);
+                        if (!isAoEFamily) continue;
+                        // ★ v3.117.10: ally-targeting AoE 제외 — Pasqal 기계령 교감/전술 지식 같은 ally buff 가
+                        //   잘못 enemy coverage 평가 대상으로 분류되던 문제. 게임 PatternSettings.Targets 직접 참조.
+                        var aoeTargetType = CombatAPI.GetAoETargetType(ab);
+                        if (aoeTargetType == Kingmaker.UnitLogic.Abilities.Components.TargetType.Ally) continue;
+                        // patternInfo 진단 용 — burst/scatter 는 null 일 수 있음 (CountEnemiesInPattern 는 ability.GetPattern() 직접 호출 — patternInfo 불필요)
                         var patternInfo = CombatAPI.GetPatternInfo(ab);
-                        if (patternInfo != null && patternInfo.IsValid && patternInfo.CanBeDirectional)
+                        if (rangedAoEAbilities == null)
                         {
-                            if (rangedAoEAbilities == null)
-                            {
-                                rangedAoEAbilities = new List<AbilityData>();
-                                rangedAoEPatternInfos = new List<CombatAPI.PatternInfo>();
-                            }
-                            rangedAoEAbilities.Add(ab);
-                            rangedAoEPatternInfos.Add(patternInfo);
+                            rangedAoEAbilities = new List<AbilityData>();
+                            rangedAoEPatternInfos = new List<CombatAPI.PatternInfo>();
                         }
+                        rangedAoEAbilities.Add(ab);
+                        rangedAoEPatternInfos.Add(patternInfo);
                     }
                 }
             }
@@ -121,7 +132,15 @@ namespace CompanionAI_v3.GameInterface
                     {
                         var pi = rangedAoEPatternInfos[i];
                         if (i > 0) details.Append(", ");
-                        details.Append($"{rangedAoEAbilities[i].Name}(Type={pi.Type},R={pi.Radius:F1},A={pi.Angle:F0})");
+                        // ★ v3.117.9: patternInfo null 안전 (burst/scatter 는 patternInfo 없을 수 있음)
+                        if (pi != null)
+                            details.Append($"{rangedAoEAbilities[i].Name}(Type={pi.Type},R={pi.Radius:F1},A={pi.Angle:F0})");
+                        else
+                        {
+                            string family = CombatAPI.IsBurstAttack(rangedAoEAbilities[i]) ? "burst"
+                                : CombatAPI.IsScatterAttack(rangedAoEAbilities[i]) ? "scatter" : "AoE";
+                            details.Append($"{rangedAoEAbilities[i].Name}({family}, no patternInfo)");
+                        }
                     }
                     Log.Engine.Debug($"[MovementAPI] {unit.CharacterName}: Ranged AoE abilities for coverage scoring ({rangedAoEAbilities.Count}): {details}");
                 }
@@ -226,14 +245,30 @@ namespace CompanionAI_v3.GameInterface
                     }
                 }
 
-                // ★ v3.116.14 (Path C cherry-pick): 게임 AttackEffectivenessTileScorer per-target axes 포팅.
-                //   PriorityScore + EnemyHPLeftScore + BodyGuardScore — 게임 scorer 인스턴스화 (stateful) 불가능
-                //   확인됨 (DecisionContext pipeline 의존). 하지만 per-target 공식 자체는 stateless — 직접 계산.
-                //   조사: feedback_investigate_before_options.md + 디컴파일 AttackEffectivenessTileScorer.cs:33-44
+                // ★ v3.117.0 Phase C: 위치별 진짜 마무리 가능성 — naive HP heuristic 대체
+                //   기존 (v3.116.14): hpSum += 50/HP — HP 만 보고 "부상 적 보임" 가산. 명중률/데미지 미반영.
+                //   Why: KillSimulator 가 TargetScorer 단계에서 명중률+데미지 통합 → MovementAPI 의 단순 HP heuristic 은 이중 신호
+                //        + 적 AI 디자인 휴리스틱 답습. 사용자 지적 "마무리 가능 계산이 안 됨" 직접 해결.
+                //   How: 위치 X 에서 적 e 에 대해 hitChance(X) × P(damage ≥ HP | hit) 계산 → KILL_OPP_VALUE 가중 가산.
+                //        hitChance 는 GetHitChanceFromPosition (게임 RuleCalculateHitChances + 가상 위치).
+                //        damage range 는 GetDamagePrediction (게임 RuleCalculateDamage; 위치 무관 보정).
                 if (score.HittableEnemyCount > 0 && enemies != null && primaryAttack != null)
                 {
-                    float hpSum = 0f;
                     int priorityCount = 0;
+                    // ★ v3.117.4: 30 → 15 인하. 사용자 검증에서 LowHP=+197 이 Total 51% 차지 dominant 신호.
+                    //   다른 축 (Cover/Exposure/Threat) 의 안전 신호 무시하는 부작용. 절반으로 균형 잡음.
+                    const float KILL_OPP_VALUE = 15f;
+
+                    // ★ v3.117.2: AP 기반 캡 — 한 턴에 가능한 공격 수만큼만 상위 P(kill) 가산.
+                    //   문제 (v3.117.1 검증): 단발 사격 캐릭터가 6명 부상 적 사거리 자리 = LowHP +197 (6×30) 가산
+                    //   현실: 한 턴 1발/1타겟, 실제 마무리 1-2 명만 가능 → 신호 과대 (다른 축 묻힘)
+                    //   해결: top-N(killProbs).Sum() 만 가산. N = floor(currentAP / attackAPCost), 최소 1
+                    float currentAP = CombatAPI.GetCurrentAP(unit);
+                    float attackAPCost = Math.Max(0.5f, primaryAttack.CalculateActionPointCost());
+                    int maxKillsThisTurn = Math.Max(1, (int)Math.Floor(currentAP / attackAPCost));
+
+                    var killProbs = new List<float>(8);
+
                     foreach (var enemy in enemies)
                     {
                         if (enemy == null || enemy.LifeState.IsDead) continue;
@@ -241,15 +276,55 @@ namespace CompanionAI_v3.GameInterface
                         string r;
                         if (!CombatAPI.CanTargetFromPosition(primaryAttack, score.Node, enemy, out r)) continue;
 
-                        // EnemyHPLeftScore: 부상 적 우선 (게임 1/HP → 우리 50/HP scaled)
-                        int hp = enemy.Health?.HitPointsLeft ?? 100;
-                        hpSum += 50f / Math.Max(1, hp);
-
-                        // PriorityScore: UnitPartPriorityTarget 인스턴스 레벨 우선순위
+                        // PriorityScore: UnitPartPriorityTarget 인스턴스 레벨 우선순위 (변경 없음)
                         if (CombatAPI.IsPriorityTargetFor(enemy, unit))
                             priorityCount++;
+
+                        // ★ v3.117.3: 아군 안전 체크 — Cone/Ray AoE 무기에서 이 적 사격 시 아군 피격 위치 차단
+                        //   사용자 지적 (v3.117.2 검증): Argenta 11명 hittable 자리 LowHP=+197 — 이론상 마무리 가능했지만
+                        //   실제론 Cone 무기 사격선 안 아군이 있어 안전하지 않은 위치였음.
+                        //   IsAttackSafeForTargetFromPosition 가 AoE 패턴 + 아군 위치 동시 검사 (단발 무기는 trivially true).
+                        //   안전하지 않은 적은 killOpportunity 가산 안 함 — 실행 시 차단될 자리 보너스 주는 게 잘못된 신호.
+                        if (allies != null && !CombatHelpers.IsAttackSafeForTargetFromPosition(
+                                primaryAttack, score.Position, unit, enemy, allies))
+                            continue;
+
+                        // === Phase C: 위치별 KillProbability ===
+                        var (minDmg, maxDmg, _) = CombatAPI.GetDamagePrediction(primaryAttack, enemy);
+                        if (maxDmg <= 0) continue;  // 데미지 0 능력 — 마무리 무관
+
+                        int hp = enemy.Health?.HitPointsLeft ?? 100;
+                        if (hp <= 0) continue;
+
+                        // P(damage ≥ HP | hit) — 균일 분포 가정 (KillSimulator 와 동일)
+                        float pKillIfHit;
+                        if (minDmg >= hp) pKillIfHit = 1f;
+                        else if (maxDmg >= hp)
+                        {
+                            float range = Math.Max(1f, maxDmg - minDmg);
+                            pKillIfHit = (maxDmg - hp) / range;
+                        }
+                        else continue;  // 1타킬 불가 — 본 자리 보너스 무관 (다른 자리도 동일)
+
+                        // 위치별 명중률 — 게임 RuleCalculateHitChances + 가상 caster position
+                        var hitInfo = CombatAPI.GetHitChanceFromPosition(primaryAttack, unit, score.Position, enemy);
+                        if (hitInfo == null) continue;
+                        float hitChance = Math.Max(0f, Math.Min(1f, hitInfo.HitChance / 100f));
+                        if (hitChance <= 0f) continue;
+
+                        killProbs.Add(hitChance * pKillIfHit);
                     }
-                    score.LowHPTargetBonus = hpSum;
+
+                    // top-N 만 합산 — AP 가 허용하는 만큼만 마무리 가능
+                    if (killProbs.Count > 0)
+                    {
+                        killProbs.Sort();  // 오름차순
+                        killProbs.Reverse();  // 내림차순
+                        int n = Math.Min(killProbs.Count, maxKillsThisTurn);
+                        float sum = 0f;
+                        for (int i = 0; i < n; i++) sum += killProbs[i];
+                        score.LowHPTargetBonus = KILL_OPP_VALUE * sum;
+                    }
                     score.PriorityTargetBonus = priorityCount * 25f;
                 }
 
@@ -265,6 +340,39 @@ namespace CompanionAI_v3.GameInterface
                     }
                 }
 
+                // Phase 4-full: AllyProtectionBonus — Tank 가 위협받는 squishy 옆 자리 보너스 (implicit body-guard).
+                //   game native UnitPartBodyGuard 미설정 케이스도 자동 보호. EnemyTargetingMap 활용.
+                //   비-Tank role 또는 situation/TargetingMap 없으면 0.
+                if (role == AIRole.Tank && situation?.TargetingMap != null && situation.CombatantAllies != null)
+                {
+                    float bonus = 0f;
+                    foreach (var ally in situation.CombatantAllies)
+                    {
+                        if (ally == null || ally == unit || !ally.IsConscious) continue;
+                        float vuln = situation.TargetingMap.GetAllyVulnerability(ally);
+                        if (vuln < 0.7f) continue;  // squishy 만 보호 대상
+
+                        // 이 ally 에게 가장 큰 위협
+                        float maxThreat = 0f;
+                        if (situation.Enemies != null)
+                        {
+                            foreach (var enemy in situation.Enemies)
+                            {
+                                if (enemy == null || !enemy.IsConscious) continue;
+                                float t = situation.TargetingMap.GetThreatScore(enemy, ally);
+                                if (t > maxThreat) maxThreat = t;
+                            }
+                        }
+                        if (maxThreat < 0.3f) continue;  // 위협 약하면 protect 무의미
+
+                        float distTiles = CombatAPI.MetersToTiles(Vector3.Distance(score.Position, ally.Position));
+                        if (distTiles > 4f) continue;  // 너무 멀면 protect 불가
+                        float proximity = 1f - distTiles / 4f;
+                        bonus += proximity * vuln * maxThreat * 30f;
+                    }
+                    score.AllyProtectionBonus = bonus;
+                }
+
                 // ★ v3.116.8 옵션 B / v3.116.9 fix: 원거리 AoE Coverage Score (Cone/Ray/Sector).
                 //   단발 사격 평가에 묻히던 "Cone 5명 vs 1명" 차이를 위치 점수에 명시 반영.
                 //   가장 가까운 살아있는 적을 패턴 조준점으로 잡고, 그 패턴 안에 추가로 잡히는 적 수에 보너스.
@@ -278,45 +386,76 @@ namespace CompanionAI_v3.GameInterface
                 //   대체 가드: 위치 근처에 살아있는 적 1명이라도 있으면 평가 (사실상 모든 케이스).
                 if (rangedAoEAbilities != null && enemies != null)
                 {
-                    BaseUnitEntity coneTarget = null;
-                    float minDist = float.MaxValue;
-                    foreach (var enemy in enemies)
+                    // ★ v3.117.9 (옵션 B): 단일 nearest target 만이 아니라 top-N 후보 시도.
+                    //   이전: nearest enemy 1명만 cone target → 더 좋은 회전 자리 놓침
+                    //   현재: 가장 가까운 적 top-3 candidate 모두 시도, 최대 점수 채택
+                    //   비용: 위치 × ability × candidate (3) — 약 3 배. 30 위치 × 3 ability × 3 후보 = 270 calls.
+                    var aliveEnemies = new List<BaseUnitEntity>();
+                    foreach (var e in enemies)
                     {
-                        if (enemy == null || enemy.LifeState.IsDead) continue;
-                        float d = Vector3.Distance(score.Position, enemy.Position);
-                        if (d < minDist) { minDist = d; coneTarget = enemy; }
+                        if (e != null && !e.LifeState.IsDead) aliveEnemies.Add(e);
                     }
-                    if (coneTarget != null)
+                    if (aliveEnemies.Count > 0)
                     {
+                        // top-3 by distance to score.Position
+                        aliveEnemies.Sort((a, b) =>
+                            Vector3.Distance(score.Position, a.Position).CompareTo(
+                                Vector3.Distance(score.Position, b.Position)));
+                        int candidateCount = Math.Min(3, aliveEnemies.Count);
+
                         int maxAoeCount = 0;
                         AbilityData bestAoeAbility = null;
-                        int unsafeBlocked = 0;  // ★ v3.116.12 진단: 아군 안전 체크 차단 카운트
+                        int unsafeBlockedAbilities = 0;  // ability 단위 — 모든 candidate 차단 시 +1
+
                         for (int ai = 0; ai < rangedAoEAbilities.Count; ai++)
                         {
-                            // ★ v3.116.12: 아군 피격 위치 차단 — 게임 IsAttackSafeForTarget 와 동일 기준.
-                            //   unsafe 위치에 보너스 주면 AI 가 이동 후 cone cast 차단되어 MP/AP 낭비.
-                            //   AoE 능력은 보통 CanTargetFriends=false 더라도 패턴 내 아군 피해 발생 가능.
-                            if (allies != null && !CombatHelpers.IsAttackSafeForTargetFromPosition(
-                                    rangedAoEAbilities[ai], score.Position, unit, coneTarget, allies))
+                            int abilityMaxCount = 0;
+                            bool foundSafeForAbility = false;
+
+                            for (int ci = 0; ci < candidateCount; ci++)
                             {
-                                unsafeBlocked++;
-                                continue;  // 이 ability 평가 스킵
+                                var candidate = aliveEnemies[ci];
+
+                                // ★ v3.116.12: 아군 안전 체크 — 이 candidate 향해 cast 시 아군 피격?
+                                if (allies != null && !CombatHelpers.IsAttackSafeForTargetFromPosition(
+                                        rangedAoEAbilities[ai], score.Position, unit, candidate, allies))
+                                    continue;  // 이 candidate 스킵, 다음 후보 시도
+
+                                foundSafeForAbility = true;
+                                // CountEnemiesInPattern 는 ability.GetPattern() 직접 호출 — Cone/Sphere/Burst 모두 작동
+                                int aoeCount = CombatAPI.CountEnemiesInPattern(
+                                    rangedAoEAbilities[ai], candidate.Position, score.Position, enemies);
+                                if (aoeCount > abilityMaxCount) abilityMaxCount = aoeCount;
                             }
-                            int aoeCount = CombatAPI.CountEnemiesInPattern(
-                                rangedAoEAbilities[ai], coneTarget.Position, score.Position, enemies);
-                            if (aoeCount > maxAoeCount)
+
+                            if (!foundSafeForAbility) unsafeBlockedAbilities++;
+                            if (abilityMaxCount > maxAoeCount)
                             {
-                                maxAoeCount = aoeCount;
+                                maxAoeCount = abilityMaxCount;
                                 bestAoeAbility = rangedAoEAbilities[ai];
                             }
                         }
+
                         if (maxAoeCount >= 2)
                             score.AoeHitCountBonus = (maxAoeCount - 1) * 12f;
-                        // ★ v3.116.10 진단: best ability + splash 카운트 score 에 임시 저장 (best 위치 로그용)
+                        // ★ v3.116.10 진단: best ability + splash 카운트 score 에 임시 저장
                         score.BestAoeAbility = bestAoeAbility;
                         score.BestAoeSplash = maxAoeCount;
-                        score.AoeUnsafeBlockedCount = unsafeBlocked;
+                        score.AoeUnsafeBlockedCount = unsafeBlockedAbilities;
                     }
+                }
+
+                // ★ v3.117.4: AoE-blocked 케이스 LowHPTargetBonus discount.
+                //   사용자 검증 (v3.117.3): Argenta 11명 hittable 자리 LowHP=+197 — 단발 사격 기준으로는 마무리 가능했지만
+                //   실제 의도는 Cone/Ray 사용. 이 자리에서 모든 AoE 능력이 아군 차단됨 → 단발 backup 가치만 남음.
+                //   Why: 단발 사격 LowHP 풀가산은 misleading — AoE 가 unit 의 high-value 공격인데 차단되면
+                //        position 의 진짜 가치는 단발 backup 만. 절반 discount 로 신호 보정.
+                //   Apply: 모든 AoE 능력 차단 (unsafeBlocked == count) AND unit 이 AoE 보유 시.
+                if (rangedAoEAbilities != null && rangedAoEAbilities.Count > 0
+                    && score.AoeUnsafeBlockedCount == rangedAoEAbilities.Count
+                    && score.LowHPTargetBonus > 0)
+                {
+                    score.LowHPTargetBonus *= 0.5f;
                 }
 
                 // ★ v3.74.2: 진동 방지 — 이전 위치 근처로 되돌아가면 패널티
@@ -416,7 +555,10 @@ namespace CompanionAI_v3.GameInterface
                         $"Hit={best.HitChanceBonus:F1}, Path=-{best.PathRiskScore:F1}, " +
                         $"AllyC=-{best.AllyClusterPenalty:F1}, Flank={best.FlankingScore:F1}, " +
                         $"Osc=-{best.OscillationPenalty:F1}, " +
-                        $"Exposure=-{best.ExposureScore:F1}");
+                        $"Exposure=-{best.ExposureScore:F1}, " +
+                        // ★ v3.116.15: Path C 3축 + 누락 축 (SharedTarget/Tac/Splash) breakdown 표시
+                        $"Prio=+{best.PriorityTargetBonus:F1}, LowHP=+{best.LowHPTargetBonus:F1}, BG=+{best.BodyGuardBonus:F1}, " +
+                        $"ST=+{best.SharedTargetBonus:F1}, Tac={best.TacticalAdjustment:F1}, Splash=+{best.MeleeAoESplashBonus:F1}");
 
                     // ★ v3.116.10/11/12 진단: AoE 측정 결과 — rangedAoEAbilities 가 있던 모든 케이스 로그
                     //   (splash=0 이면 ability=null 도 가능 — 그것도 진단 정보)

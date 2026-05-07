@@ -967,8 +967,25 @@ namespace CompanionAI_v3.Data
             if (info != null) return info.Timing;
 
             // 미등록 스킬: 자동 감지
-            return AutoDetectTiming(ability);
+            var auto = AutoDetectTiming(ability);
+            // ★ v3.117.11 (옵션 3): DB miss 진단 — 한 GUID 당 1회만 로그 (spam 방지)
+            //   목적: 미등록 능력 식별 → 우선순위로 DB 등록.
+            //   AutoDetectTiming 결과 신뢰도 검증을 위한 가시화.
+            if (Main.IsDebugEnabled && ability != null)
+            {
+                try
+                {
+                    var guid = ability.Blueprint?.AssetGuid?.ToString();
+                    if (!string.IsNullOrEmpty(guid) && _dbMissLoggedGuids.Add(guid))
+                        Logging.Log.Analysis.Debug($"[GetTiming] DB miss: {ability.Name} ({guid}) → AutoDetect={auto}");
+                }
+                catch { }  // 진단 로그 실패는 무음
+            }
+            return auto;
         }
+
+        // ★ v3.117.11: DB miss 한 번씩만 로그하기 위한 cache (per-session)
+        private static readonly System.Collections.Generic.HashSet<string> _dbMissLoggedGuids = new System.Collections.Generic.HashSet<string>();
 
         /// <summary>
         /// ★ v3.7.30: 블루프린트 속성 기반 완전 자동 타이밍 감지

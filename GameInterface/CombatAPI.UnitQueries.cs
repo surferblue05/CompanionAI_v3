@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Kingmaker;
+using Kingmaker.Blueprints;                    // GetComponent extension
 using Kingmaker.Blueprints.Root;              // ProgressionRoot (Archetype)
 using Kingmaker.Controllers.TurnBased;        // Initiative (IsExtraTurn)
 using Kingmaker.EntitySystem;                  // EntityHelper.DistanceToInCells (GetDistance)
@@ -9,6 +11,8 @@ using Kingmaker.EntitySystem.Stats.Base;      // StatType
 using Kingmaker.RuleSystem;                   // Rulebook
 using Kingmaker.RuleSystem.Rules;             // RuleCalculateDodgeChance, RuleCalculateParryChance
 using Kingmaker.UnitLogic.Abilities;          // AbilityData
+using Kingmaker.UnitLogic.Abilities.Components;  // AbilityDeliverChain, TargetType
+using Kingmaker.UnitLogic.Mechanics.Actions;     // ContextActionCastSpell
 using Kingmaker.UnitLogic.Progression.Paths;  // BlueprintCareerPath (Archetype)
 using Kingmaker.UnitLogic.Squads;             // PartSquadExtension.GetSquadOptional (IsExtraTurn)
 using Kingmaker.View.Covers;                  // LosCalculations.CoverType
@@ -716,6 +720,170 @@ namespace CompanionAI_v3.GameInterface
                 _archetypeCache[unitId] = UnitArchetype.Unknown;
                 return UnitArchetype.Unknown;
             }
+        }
+
+        #endregion
+
+        #region Chain-Trigger Weapon Detection (v3.117.30)
+
+        /// <summary>
+        /// v3.117.30: Ability 의 OnHit 액션에서 chain trigger ability 검출 (component-based).
+        ///
+        /// 게임 native 메커니즘 (디컴파일 검증):
+        ///   AbilityData.AdditionalEffects (yields BlueprintAbilityAdditionalEffect — weapon.OnHitActions + weaponAbility.OnHitActions)
+        ///   → BlueprintAbilityAdditionalEffect.OnHitActions.Actions (ActionList)
+        ///   → ContextActionCastSpell.Spell (BlueprintAbility) — 자동 트리거 ability
+        ///   → BlueprintAbility.GetComponent&lt;AbilityDeliverChain&gt;() — chain delivery
+        ///
+        /// 무기 예시: ArcRifleT2_Item.OnHitActions = [ContextActionCastSpell(Spell=ArcRifleT2Chain_Ability)]
+        /// 검출 시 chain 의 Radius (셀), TargetType (Enemy/Ally/Any), TargetsCount 추출.
+        ///
+        /// 반환 true: chain trigger 검출. radius/targetType/maxChain 채워짐.
+        /// 반환 false: chain 없음 또는 오류.
+        /// </summary>
+        // v3.117.34: chain detect 로그 throttling — ability GUID 별 1회만 출력 (이전: 매 호출마다)
+        private static readonly HashSet<string> _loggedChainAbilities = new HashSet<string>();
+        private static readonly HashSet<string> _loggedNonChainSpells = new HashSet<string>();
+
+        public static bool TryGetWeaponOnHitChain(
+            AbilityData ability,
+            out int radius, out TargetType targetType, out int maxChain)
+        {
+            radius = 0;
+            targetType = TargetType.Enemy;
+            maxChain = 0;
+
+            if (ability == null) return false;
+
+            try
+            {
+                foreach (var addEffect in ability.AdditionalEffects)
+                {
+                    if (addEffect?.OnHitActions?.Actions == null) continue;
+
+                    foreach (var action in addEffect.OnHitActions.Actions)
+                    {
+                        var castSpell = action as ContextActionCastSpell;
+                        if (castSpell?.Spell == null) continue;
+
+                        // 1. AbilityDeliverChain (Psyker ChainLightning 류)
+                        var chain = castSpell.Spell.GetComponent<AbilityDeliverChain>();
+                        if (chain != null)
+                        {
+                            radius = chain.Radius;
+                            targetType = chain.TargetType;
+                            try
+                            {
+                                int countVal = chain.TargetsCount?.Value ?? 0;
+                                maxChain = countVal > 0 ? countVal : 4;
+                            }
+                            catch { maxChain = 4; }
+
+                            if (Main.IsDebugEnabled)
+                            {
+                                string key = ability.Blueprint?.AssetGuid?.ToString() ?? ability.Name;
+                                if (_loggedChainAbilities.Add(key))
+                                    Log.Engine.Debug($"[ChainDetect] DeliverChain: {ability.Name} → {castSpell.Spell.name} (radius={radius}, type={targetType}, max={maxChain})");
+                            }
+                            return true;
+                        }
+
+                        // 2. v3.117.33: AbilityTargetsInPatternTrail (Arc 무기 류 — 패턴 안 모든 타겟)
+                        var trail = castSpell.Spell.GetComponent<AbilityTargetsInPatternTrail>();
+                        if (trail != null)
+                        {
+                            int trailRadius = 0;
+                            try { trailRadius = trail.Pattern?.Radius ?? 0; } catch { }
+                            radius = trailRadius > 0 ? trailRadius : 5;
+                            targetType = trail.Targets;
+                            maxChain = 99;
+
+                            if (Main.IsDebugEnabled)
+                            {
+                                string key = ability.Blueprint?.AssetGuid?.ToString() ?? ability.Name;
+                                if (_loggedChainAbilities.Add(key))
+                                    Log.Engine.Debug($"[ChainDetect] PatternTrail: {ability.Name} → {castSpell.Spell.name} (radius={radius}, type={targetType})");
+                            }
+                            return true;
+                        }
+
+                        // 검출 실패 — *새 spell* 만 1회 진단 (회귀/신규 무기 식별용)
+                        if (Main.IsDebugEnabled)
+                        {
+                            string spellKey = castSpell.Spell.AssetGuid?.ToString() ?? castSpell.Spell.name;
+                            if (_loggedNonChainSpells.Add(spellKey))
+                            {
+                                var spellComps = castSpell.Spell.ComponentsArray;
+                                string compNames = spellComps == null ? "(null)" : string.Join(",", spellComps.Select(c => c?.GetType().Name ?? "null"));
+                                Log.Engine.Debug($"[ChainDetect] non-chain spell '{castSpell.Spell.name}' components: [{compNames}]");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Main.IsDebugEnabled) Log.Engine.Warn($"[CombatAPI] TryGetWeaponOnHitChain failed for {ability?.Name}: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// v3.117.30: Unit 이 친선 사격 자동 회피 (immunity) 보유 여부.
+        ///
+        /// 게임 native 메커니즘 (디컴파일 검증):
+        ///   PartMechanicFeatures.AutoDodgeFriendlyFire (FeatureCountableFlag) — 친선 사격 한정
+        ///   PartMechanicFeatures.AutoDodge (FeatureCountableFlag) — 모든 공격 (강력)
+        ///   FeatureCountableFlag → bool implicit cast (count > 0 = active)
+        ///
+        /// 활용: AoE/chain 시뮬레이션에서 immunity 보유 ally 는 친선 사격 카운트 제외 →
+        /// AI 가 자유롭게 공격 (게임이 자동 dodge 처리).
+        /// </summary>
+        public static bool IsImmuneToFriendlyFire(BaseUnitEntity unit)
+        {
+            if (unit?.Features == null) return false;
+            try
+            {
+                if ((bool)unit.Features.AutoDodgeFriendlyFire) return true;
+                if ((bool)unit.Features.AutoDodge) return true;
+                return false;
+            }
+            catch { return false; }
+        }
+
+        // v3.117.35: caster 에게 Arc 무기 친선 사격 면역 buff 가 있는지 검사용 GUID list.
+        //   사용자 보고: LiturgyOfInsulation_Buff (b8b7d40d3471498dbe991ee1003894ec) 가 활성 시
+        //   Arc 무기 chain 이 아군 자동 면역 처리. AI 는 이 buff 활성 시 chain check 우회 가능.
+        //   향후 다른 비슷한 buff 발견 시 list 확장.
+        private static readonly HashSet<string> _arcInsulationBuffGuids = new HashSet<string>
+        {
+            "b8b7d40d3471498dbe991ee1003894ec",  // LiturgyOfInsulation_Buff (Adept passive)
+        };
+
+        /// <summary>
+        /// v3.117.35: caster 가 Arc 무기 친선 사격 면역 buff 활성 보유 여부.
+        ///
+        /// 활용: chain weapon 검사 시 caster 가 Arc-insulation 보유 → 게임이 자동으로 ally chain 차단 →
+        /// AI 가 chain check skip 가능 (false positive 차단 방지).
+        /// </summary>
+        public static bool HasArcInsulationBuff(BaseUnitEntity caster)
+        {
+            if (caster?.Buffs == null) return false;
+            try
+            {
+                foreach (var buff in caster.Buffs)
+                {
+                    string guid = buff?.Blueprint?.AssetGuid?.ToString();
+                    if (guid != null && _arcInsulationBuffGuids.Contains(guid))
+                        return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Main.IsDebugEnabled) Log.Engine.Warn($"[CombatAPI] HasArcInsulationBuff failed for {caster?.CharacterName}: {ex.Message}");
+            }
+            return false;
         }
 
         #endregion

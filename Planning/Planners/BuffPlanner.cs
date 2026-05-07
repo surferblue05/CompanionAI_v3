@@ -524,14 +524,14 @@ namespace CompanionAI_v3.Planning.Planners
             var info = AbilityDatabase.GetInfo(buff);
 
             // ═══════════════════════════════════════════════
-            // 1. 0 AP 버프 → 무조건 높은 점수 (안 쓰면 손해)
+            // 1. 0 AP 버프 → 강한 base 가산 (안 쓰면 손해)
             // Blood Oath, Terrifying Strike, Where It Hurts, Oath of Vengeance 등
+            // ★ v3.117.11 (옵션 1): 조기 return 제거 — 4 종 0AP buff 가 모두 110 동점이어서
+            //   첫 발견 buff random 선택되던 문제 해결. base 100 유지 + 효과별 가산 cascade.
+            //   결과: 데미지 modifier buff = 100+45, free attack buff = 100+80, CC buff = 100+35 등.
             // ═══════════════════════════════════════════════
             if (cost <= 0f)
-            {
                 score += 100f;
-                return score;
-            }
 
             // ═══════════════════════════════════════════════
             // 2. "다음 공격 0 AP" 류 (Wildfire 등)

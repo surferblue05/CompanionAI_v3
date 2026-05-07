@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Kingmaker;                              // Game.Instance (Arc chain simulation)
 using Kingmaker.Blueprints;
+using Kingmaker.EntitySystem;                 // EntityHelper.DistanceToInCells
 using Kingmaker.EntitySystem.Entities;
 using Kingmaker.Pathfinding;
 using Kingmaker.UnitLogic.Abilities;
@@ -464,7 +466,11 @@ namespace CompanionAI_v3.GameInterface
 
             // ★ v3.9.24: 체인 능력 안전 체크 — aoERadius=0이어도 체인 전파로 아군 피격 가능
             // AbilityDeliverChain 컴포넌트를 동적 감지하여 GUID 하드코딩 불필요
-            if (aoERadius <= 0 && !hasScatterDanger)
+            // ★ v3.117.7: Burst 도 ability.GetPattern() 으로 산란 영역 반환 → chain check 로 빠지지 않게
+            //   기존 가드는 burst 케이스를 chain check 로 잘못 분류했음 (burst 는 chain 능력 아님 → 항상 safe 반환).
+            //   game ScatterShotTargetSelector.IsScatterShotRisky 와 동등한 검사를 native pattern 으로 수행.
+            bool isBurstForGate = CombatAPI.IsBurstAttack(ability);
+            if (aoERadius <= 0 && !hasScatterDanger && !isBurstForGate)
             {
                 return IsChainAbilitySafeForTarget(ability, target, casterEntity, allies);
             }
@@ -473,20 +479,66 @@ namespace CompanionAI_v3.GameInterface
             int scatterRange = hasScatterDanger ? CombatAPI.GetAbilityRangeInTiles(ability) : 0;
             if (allies == null) return true;
 
+            // v3.117.26: Conservative line-of-fire 검사 — *pure scatter* (burst 동반 안 함) 만 적용.
+            //   배경: v3.117.25 가 hasScatterDanger 로 게이트 했으나 Argenta 점사 사격이 burst+scatter 조합
+            //   이라 차단 동일. Native pattern (v3.117.7 GetAffectedNodes) 이 burst 의 primary line 정확히
+            //   산출 → burst 동반 능력은 native pattern 만으로 충분 (scatter overshoot 가 primary line 외부로
+            //   크게 안 벗어남, 게임 실제 패턴이 이미 cover).
+            //   사용자 보고 (v3.117.25 검증): Argenta 점사 사격 7명 cluster 자리에서 ally DOOM perpDist=1.0~1.3t
+            //   가 모두 BLOCKED — 게임 실제 패턴은 그 위치 ally hit 안 함 (false positive).
+            //   Pure scatter (예: 산탄총 — burst 없이 RNG 산탄) 은 spread 가 더 넓어 native pattern 외 hit 가능
+            //   → 버퍼 유지.
+            bool isPureScatter = hasScatterDanger && !isBurstForGate;
+            if (isPureScatter)
+            {
+                Vector3 fireDir = target.Position - fromPosition;
+                float fireDist = fireDir.magnitude;
+                if (fireDist > 0.1f)
+                {
+                    Vector3 fireDirNorm = fireDir / fireDist;
+                    float halfWidthMeters = CombatAPI.TilesToMeters(1.5f);  // 1.5 타일 양쪽
+                    foreach (var ally in allies)
+                    {
+                        if (ally == null || !ally.IsConscious) continue;
+                        if (ally == target) continue;
+                        if (ally == casterEntity) continue;
+                        Vector3 toAlly = ally.Position - fromPosition;
+                        float projection = Vector3.Dot(toAlly, fireDirNorm);
+                        if (projection < 0 || projection > fireDist) continue;  // 직선 범위 밖 (caster 뒤 / target 너머)
+                        float perpDist = Vector3.Cross(fireDirNorm, toAlly).magnitude;
+                        if (perpDist < halfWidthMeters)
+                        {
+                            if (Main.IsDebugEnabled)
+                                Log.Engine.Debug($"[AoESafety][Scatter] Line-of-fire unsafe: {ability.Name} {casterEntity.CharacterName}→{target.CharacterName}, ally {ally.CharacterName} perpDist={CombatAPI.MetersToTiles(perpDist):F1}t");
+                            return false;
+                        }
+                    }
+                }
+            }
+
             var aoeConfig = AIConfig.GetAoEConfig();
             int playerPartyAlliesInRange = 0;
 
             // ★ v3.112.0: Phase E.1 — game-native OrientedPatternData 경로 (fromPosition 기반)
+            // ★ v3.117.7: 게임의 ability.GetPattern() 은 burst/scatter/AoE 모두 패턴 반환.
+            //   사용자 지적 (v3.117.6 분석): "게임 API 에 burst 산란 영역 직접 계산 없음" 은 잘못된 추측.
+            //   디컴파일 검증: ScatterShotTargetSelector.IsScatterShotRisky 가 GetOrientedPattern 으로
+            //   burst 친선 사격 정확히 판정. 우리도 GetAffectedNodes (= GetPattern) 호출 가능 — 단지
+            //   기존 가드 (aoERadius > 0) 가 burst 케이스 제외하던 게 진짜 문제.
+            //   Fix: aoERadius=0 + (burst | scatter) 케이스에도 native pattern 시도.
+            //   ability.GetPattern 이 빈 패턴 반환 시 nativePatternReady=false → legacy 로직으로 폴백.
+            bool isBurst = CombatAPI.IsBurstAttack(ability);
+            bool tryNativePattern = aoERadius > 0 || isBurst || hasScatterDanger;
             OrientedPatternData nativePattern = default;
             bool nativePatternReady = false;
-            if (SC.UseNativePattern && ability != null && target != null && aoERadius > 0)
+            if (SC.UseNativePattern && ability != null && target != null && tryNativePattern)
             {
                 try
                 {
                     nativePattern = CombatAPI.GetAffectedNodes(ability, target.Position, fromPosition);
                     nativePatternReady = !nativePattern.IsEmpty;
                     if (nativePatternReady && Main.IsDebugEnabled)
-                        Log.Engine.Debug($"[AoESafety][Native] SafeFromPos {ability.Name}: pattern precomputed");
+                        Log.Engine.Debug($"[AoESafety][Native] SafeFromPos {ability.Name}: pattern precomputed (radius={aoERadius:F1}, burst={isBurst}, scatter={hasScatterDanger})");
                 }
                 catch (Exception ex)
                 {
@@ -502,35 +554,33 @@ namespace CompanionAI_v3.GameInterface
 
                 bool isInDanger = false;
 
-                if (aoERadius > 0)
+                // ★ v3.117.7: Native pattern 우선 — aoERadius 와 무관 (burst/scatter 모두 동일 경로)
+                if (nativePatternReady)
                 {
-                    if (nativePatternReady)
+                    // 게임 내장 OrientedPatternData 로 ally 위치 교차 검사 — 모든 패턴 타입 지원
+                    foreach (var occ in ally.GetOccupiedNodes())
                     {
-                        // Native 단일 경로: directional/circle 구분 없이 게임 내장 패턴으로 판정
-                        foreach (var occ in ally.GetOccupiedNodes())
-                        {
-                            if (occ != null && nativePattern.Contains(occ)) { isInDanger = true; break; }
-                        }
+                        if (occ != null && nativePattern.Contains(occ)) { isInDanger = true; break; }
+                    }
+                }
+                else if (aoERadius > 0)
+                {
+                    // ★ v3.9.24 (legacy): directional/circle 분기 — native pattern 실패 시 폴백
+                    var patternInfo = CombatAPI.GetPatternInfo(ability);
+                    if (patternInfo != null && patternInfo.IsValid && patternInfo.CanBeDirectional)
+                    {
+                        Vector3 direction = (target.Position - fromPosition).normalized;
+                        if (CombatAPI.IsUnitInDirectionalAoERange(
+                            fromPosition, direction, ally, aoERadius,
+                            patternInfo.Angle > 0 ? patternInfo.Angle : 90f,
+                            patternInfo.Type ?? Kingmaker.Blueprints.PatternType.Cone))
+                            isInDanger = true;
                     }
                     else
                     {
-                        // ★ v3.9.24 (legacy): directional/circle 분기
-                        var patternInfo = CombatAPI.GetPatternInfo(ability);
-                        if (patternInfo != null && patternInfo.IsValid && patternInfo.CanBeDirectional)
-                        {
-                            Vector3 direction = (target.Position - fromPosition).normalized;
-                            if (CombatAPI.IsUnitInDirectionalAoERange(
-                                fromPosition, direction, ally, aoERadius,
-                                patternInfo.Angle > 0 ? patternInfo.Angle : 90f,
-                                patternInfo.Type ?? Kingmaker.Blueprints.PatternType.Cone))
-                                isInDanger = true;
-                        }
-                        else
-                        {
-                            // Circle/비방향성: 원형 반경 체크
-                            if (CombatAPI.IsUnitInAoERange(ability, target.Position, ally, aoERadius))
-                                isInDanger = true;
-                        }
+                        // Circle/비방향성: 원형 반경 체크
+                        if (CombatAPI.IsUnitInAoERange(ability, target.Position, ally, aoERadius))
+                            isInDanger = true;
                     }
                 }
                 else if (hasScatterDanger)
@@ -615,7 +665,38 @@ namespace CompanionAI_v3.GameInterface
             try
             {
                 var deliverChain = ability.Blueprint?.GetComponent<AbilityDeliverChain>();
-                if (deliverChain == null) return true;  // 체인 능력이 아님 → 안전
+                if (deliverChain == null)
+                {
+                    // v3.117.30: weapon-side OnHit chain trigger 검사 (게임 native component-based).
+                    //   AbilityData.AdditionalEffects → ContextActionCastSpell.Spell → AbilityDeliverChain
+                    //   예: ArcRifleT2_Item.OnHitActions → ArcRifleT2Chain_Ability (게임 검증).
+                    //   기존 v3.9.24 검사는 primary ability 의 chain 컴포넌트만 봐서 weapon-side trigger 우회.
+                    if (CombatAPI.TryGetWeaponOnHitChain(ability, out int weaponChainRadius, out TargetType weaponChainTargetType, out int weaponChainMax))
+                    {
+                        // TargetType.Enemy 만 chain 하면 ally 안전
+                        if (weaponChainTargetType == TargetType.Enemy) return true;
+
+                        // v3.117.35: caster Arc insulation buff 활성 시 게임이 자동으로 ally chain 차단 → AI 검사 우회
+                        if (CombatAPI.HasArcInsulationBuff(caster))
+                        {
+                            if (Main.IsDebugEnabled) Log.Engine.Debug($"[AOE] WeaponChain skip (caster has Arc insulation): {ability.Name} -> {target.CharacterName}");
+                            return true;
+                        }
+
+                        // ally chain 가능 → 시뮬레이션
+                        int weaponAlliesHit = SimulateWeaponChainAllyHits(target, caster, weaponChainRadius, weaponChainMax);
+                        var weaponAoeConfig = AIConfig.GetAoEConfig();
+                        int weaponMaxAlliesAllowed = weaponAoeConfig?.MaxPlayerAlliesHit ?? 1;
+                        if (weaponAlliesHit > weaponMaxAlliesAllowed)
+                        {
+                            if (Main.IsDebugEnabled) Log.Engine.Debug(
+                                $"[AOE] WeaponChain safety: {ability.Name} -> {target.CharacterName} blocked " +
+                                $"(radius={weaponChainRadius}, max={weaponChainMax}, type={weaponChainTargetType}, alliesHit={weaponAlliesHit} > max={weaponMaxAlliesAllowed})");
+                            return false;
+                        }
+                    }
+                    return true;  // 체인 능력이 아님 → 안전
+                }
 
                 // TargetType.Enemy만 체인하는 능력은 아군 안전 (조기 반환)
                 if (deliverChain.TargetType == TargetType.Enemy) return true;
@@ -623,14 +704,16 @@ namespace CompanionAI_v3.GameInterface
                 // ★ v3.9.68: 게임 알고리즘 기반 체인 타겟 예측
                 var chainTargets = SpecialAbilityHandler.PredictChainTargets(ability, target);
 
-                // 아군 피격 수 계산
+                // 아군 피격 수 계산 — v3.117.30: immunity 보유 ally 제외 (게임이 자동 dodge)
                 int alliesHit = 0;
                 if (!caster.IsPlayerEnemy)
                 {
                     foreach (var chainTarget in chainTargets)
                     {
-                        if (chainTarget != target && chainTarget.IsInPlayerParty && chainTarget != caster)
-                            alliesHit++;
+                        if (chainTarget == target || chainTarget == caster) continue;
+                        if (!chainTarget.IsInPlayerParty) continue;
+                        if (CombatAPI.IsImmuneToFriendlyFire(chainTarget)) continue;  // v3.117.30: 자동 회피 ally
+                        alliesHit++;
                     }
                 }
 
@@ -653,6 +736,93 @@ namespace CompanionAI_v3.GameInterface
                 return true;  // 에러 시 안전하게 허용 (기존 동작 유지)
             }
         }
+
+        /// <summary>
+        /// v3.117.30/33: Weapon-side chain/trail (OnHit triggered) 전파 시뮬레이션.
+        ///
+        /// 두 모드:
+        /// - **Sequential chain** (maxChain &lt; 50): AbilityDeliverChain 류. nearest-next 알고리즘.
+        ///   게임 SelectNextTarget (AbilityDeliverChain.cs:132) 동일 패턴.
+        /// - **Pattern trail** (maxChain &gt;= 50): AbilityTargetsInPatternTrail 류. 보수적
+        ///   radius-around-(caster|target) 검사 — 캐스터/타겟 양쪽 radius 내 ally 카운트.
+        ///   게임은 cone/ray pattern 따라가지만 plan 시점에 정확한 pattern 구성 어려움 → 보수적 dual-radius.
+        ///
+        /// 친선 사격 카운트: ally + immunity 미보유 만.
+        /// </summary>
+        private static int SimulateWeaponChainAllyHits(
+            BaseUnitEntity initialTarget, BaseUnitEntity caster,
+            int radiusCells, int maxChain)
+        {
+            if (initialTarget == null || caster == null || radiusCells <= 0)
+                return 0;
+
+            int alliesHit = 0;
+
+            try
+            {
+                // Pattern trail mode: dual-radius (caster + target)
+                if (maxChain >= 50)
+                {
+                    foreach (var unit in Game.Instance.State.AllBaseUnits)
+                    {
+                        if (unit == null || unit == caster || unit == initialTarget) continue;
+                        if (unit.LifeState.IsDead || !unit.IsInCombat) continue;
+                        if (!unit.IsInPlayerParty) continue;
+                        if (CombatAPI.IsImmuneToFriendlyFire(unit)) continue;
+
+                        float distFromTarget = (float)unit.DistanceToInCells(initialTarget.Position);
+                        float distFromCaster = (float)unit.DistanceToInCells(caster.Position);
+                        if (distFromTarget <= radiusCells || distFromCaster <= radiusCells)
+                            alliesHit++;
+                    }
+                    return alliesHit;
+                }
+
+                // Sequential chain mode
+                if (maxChain <= 1) return 0;
+                var usedTargets = new HashSet<BaseUnitEntity> { initialTarget };
+                Vector3 currentPoint = initialTarget.Position;
+
+                for (int i = 1; i < maxChain; i++)
+                {
+                    BaseUnitEntity nextTarget = null;
+                    float minDist = float.MaxValue;
+
+                    foreach (var unit in Game.Instance.State.AllBaseUnits)
+                    {
+                        if (unit == null) continue;
+                        if (unit.LifeState.IsDead) continue;
+                        if (!unit.IsInCombat) continue;
+                        if (usedTargets.Contains(unit)) continue;
+
+                        float dist = (float)unit.DistanceToInCells(currentPoint);
+                        if (dist <= radiusCells && dist < minDist)
+                        {
+                            minDist = dist;
+                            nextTarget = unit;
+                        }
+                    }
+
+                    if (nextTarget == null) break;
+
+                    if (!caster.IsPlayerEnemy && nextTarget.IsInPlayerParty && nextTarget != caster)
+                    {
+                        if (!CombatAPI.IsImmuneToFriendlyFire(nextTarget))
+                            alliesHit++;
+                    }
+
+                    usedTargets.Add(nextTarget);
+                    currentPoint = nextTarget.Position;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Main.IsDebugEnabled) Log.Engine.Warn($"[AoESafety] WeaponChain simulation failed: {ex.Message}");
+            }
+
+            return alliesHit;
+        }
+
 
         #endregion
 

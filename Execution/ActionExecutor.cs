@@ -254,6 +254,22 @@ namespace CompanionAI_v3.Execution
                 Log.Engine.Debug($"[Executor] Execution-time reachability OK: {ability.Name} -> {targetUnit.CharacterName}");
             }
 
+            // AoE 친선 사격 execution-time 재검증 (defense-in-depth).
+            //   v3.117.16/18/19 부터 plan 자체가 destination-aware (effectiveCasterPosition 전달) 로 정확 판정.
+            //   이 레이어는 plan↔execute drift 시나리오 가드: 이동 부분 실패 (path obstruction),
+            //   캐스터 push/pull effect, plan-time destination 계산 회귀 등. 평상시 no-op.
+            if (action.Type == ActionType.Attack
+                && casterUnit != null && targetUnit != null
+                && (action.AllTargets == null || action.AllTargets.Count == 0))
+            {
+                var allies = CombatAPI.GetAllies(casterUnit);
+                if (allies != null && !AoESafetyChecker.IsAoESafeForUnitTarget(ability, casterUnit, targetUnit, allies))
+                {
+                    Log.Engine.Warn($"[Executor] Execution-time ally safety FAILED: {ability.Name} -> {targetUnit.CharacterName} from ({casterUnit.Position.x:F1}, {casterUnit.Position.z:F1}) — plan↔execute drift");
+                    return ExecutionResult.Failure($"AoE unsafe at execution position");
+                }
+            }
+
             // 최종 검증 - 타겟에게 사용 가능한지
             // ★ v3.7.25: MultiTarget 능력은 LOS 체크 스킵 (Point 타겟이므로)
             if (action.AllTargets == null || action.AllTargets.Count == 0)

@@ -682,6 +682,10 @@ namespace CompanionAI_v3.GameInterface
                         _sharedAllySet.Add(allies[i]);
 
                 // ★ v3.9.22: Remove로 중복 방지 — 대형 유닛 다중 타일 점유 시 1회만 카운트
+                // ★ v3.117.13: TryGetUnit 만으로는 anchor node 만 잡힘 — 패턴 가장자리에 걸친 큰 유닛 누락.
+                //   사용자 incident: PlanUnitTargetedAoEAttack 가 alliesHit=0 측정한 자리에서 Solomon 친선 사격.
+                //   Fix: 적/아군 set 의 각 유닛에 대해 GetOccupiedNodes 로 모든 점유 노드 검사 (IsUnitInPattern 와 동일 로직).
+                //   기존 anchor-node 경로 빠른 first-pass 로 유지하되, 패턴 가장자리 큰 유닛도 동시 검사.
                 foreach (var node in pattern.Nodes)
                 {
                     if (node.TryGetUnit(out var unit) && unit is BaseUnitEntity baseUnit)
@@ -690,6 +694,31 @@ namespace CompanionAI_v3.GameInterface
                             enemyCount++;
                         if (baseUnit != caster && _sharedAllySet.Remove(baseUnit))
                             allyCount++;
+                    }
+                }
+                // ★ v3.117.13: 남은 유닛 (anchor node 가 패턴 밖) 의 occupied nodes 검사
+                //   _sharedUnitSet/_sharedAllySet 에 남은 유닛 = 위 first-pass 에서 잡히지 않음.
+                //   각 유닛의 모든 occupied node 가 패턴 안에 있는지 확인.
+                if (_sharedUnitSet.Count > 0)
+                {
+                    foreach (var remainingEnemy in _sharedUnitSet)
+                    {
+                        if (remainingEnemy == null) continue;
+                        foreach (var occ in remainingEnemy.GetOccupiedNodes())
+                        {
+                            if (occ != null && pattern.Contains(occ)) { enemyCount++; break; }
+                        }
+                    }
+                }
+                if (_sharedAllySet.Count > 0)
+                {
+                    foreach (var remainingAlly in _sharedAllySet)
+                    {
+                        if (remainingAlly == null || remainingAlly == caster) continue;
+                        foreach (var occ in remainingAlly.GetOccupiedNodes())
+                        {
+                            if (occ != null && pattern.Contains(occ)) { allyCount++; break; }
+                        }
                     }
                 }
             }

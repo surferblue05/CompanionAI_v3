@@ -262,14 +262,25 @@ namespace CompanionAI_v3.Planning.Plans
 
                     var targetWrapper = new TargetWrapper(enemy);
                     string reason;
-                    if (CombatAPI.CanUseAbilityOn(attack, targetWrapper, out reason))
+                    if (!CombatAPI.CanUseAbilityOn(attack, targetWrapper, out reason)) continue;
+
+                    // ★ v3.117.8 (옵션 B): caller guard 제거 — AoESafetyChecker 가 단일 진실 source.
+                    //   비-AoE 단발은 IsChainAbilitySafeForTarget 로 즉시 true 반환 (거의 0 비용).
+                    //   AoE/burst/scatter/chain 모두 IsAoESafeForUnitTarget 내부에서 분류 + 검사.
+                    //   장점: 우리 caller guard 가 새 능력 분류 누락하는 위험 0.
+                    if (situation.Allies != null
+                        && !AoESafetyChecker.IsAoESafeForUnitTarget(attack, situation.Unit, enemy, situation.Allies))
                     {
-                        actions.Add(PlannedAction.Attack(attack, enemy,
-                            $"0-AP attack: {attack.Name}", 0f));
-                        Log.Planning.Info($"[{RoleName}] 0-AP attack: {attack.Name} -> {enemy.CharacterName}");
-                        planned++;
-                        break;
+                        if (Main.IsDebugEnabled)
+                            Log.Planning.Debug($"[{RoleName}] 0-AP attack BLOCKED by ally safety: {attack.Name} -> {enemy.CharacterName}");
+                        continue;  // 이 적 스킵, 다른 적 시도
                     }
+
+                    actions.Add(PlannedAction.Attack(attack, enemy,
+                        $"0-AP attack: {attack.Name}", 0f));
+                    Log.Planning.Info($"[{RoleName}] 0-AP attack: {attack.Name} -> {enemy.CharacterName}");
+                    planned++;
+                    break;
                 }
             }
         }

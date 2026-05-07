@@ -60,6 +60,10 @@ namespace CompanionAI_v3.Analysis
         // 이미 행동한 적 도발 = 이번 라운드 효과 없음 (낭비)
         private const float WEIGHT_TURN_URGENCY_MAX = 40f;       // 다음 행동 적 도발 보너스 (최대)
         private const float WEIGHT_TURN_ALREADY_ACTED = -20f;    // 이미 행동한 적 도발 페널티
+        // Phase 4-full: squishy 아군 위협 가중. EnemyTargetingMap.GetSquishyThreatScore (0~1.3) × 50 = +0~65 / 적.
+        //   기존 WEIGHT_ENEMY_TARGETING_ALLY (100) 는 binary — squishy↔Tank 차별 없음.
+        //   이걸로 "약적이 Cassia 위협" > "강적이 Tank 위협" 차별화.
+        private const float WEIGHT_SQUISHY_THREAT_TAUNT = 50f;
 
         #endregion
 
@@ -127,7 +131,7 @@ namespace CompanionAI_v3.Analysis
                 // 옵션 1: 현재 위치에서 도발
                 var currentOption = EvaluateTauntFromPosition(
                     tank, tank.Position, taunt, isAoE, isSelfTarget, isTouchRange, aoERadius, tauntRange,
-                    situation.Enemies, enemiesTargetingAllies, requiresMove: false, moveCost: 0f);
+                    situation.Enemies, enemiesTargetingAllies, requiresMove: false, moveCost: 0f, situation: situation);
                 if (currentOption != null)
                     options.Add(currentOption);
 
@@ -136,7 +140,7 @@ namespace CompanionAI_v3.Analysis
                 {
                     var moveOptions = EvaluateTauntWithMovement(
                         tank, taunt, isAoE, isSelfTarget, isTouchRange, aoERadius, tauntRange,
-                        situation.Enemies, enemiesTargetingAllies, availableMP);
+                        situation.Enemies, enemiesTargetingAllies, availableMP, situation);
                     options.AddRange(moveOptions);
                 }
             }
@@ -186,7 +190,8 @@ namespace CompanionAI_v3.Analysis
             List<BaseUnitEntity> enemies,
             List<BaseUnitEntity> enemiesTargetingAllies,
             bool requiresMove,
-            float moveCost)
+            float moveCost,
+            Situation situation = null)  // Phase 4-full: SquishyThreat 통합 위해
         {
             var affectedEnemies = new List<BaseUnitEntity>();
             int targetingAlliesCount = 0;
@@ -381,6 +386,22 @@ namespace CompanionAI_v3.Analysis
                 Log.Analysis.Debug($"[TauntScorer] TurnOrder bonus: {turnOrderBonus:+0;-0} for {affectedEnemies.Count} enemies");
             }
 
+            // Phase 4-full: squishy 위협 가중 — Cassia 위협 적 도발이 Tank 본인 위협 적 도발보다 가치 ↑.
+            float squishyThreatBonus = 0f;
+            if (situation.TargetingMap != null)
+            {
+                foreach (var enemy in affectedEnemies)
+                {
+                    squishyThreatBonus += situation.TargetingMap.GetSquishyThreatScore(enemy) * WEIGHT_SQUISHY_THREAT_TAUNT;
+                }
+                if (squishyThreatBonus > 0.01f)
+                {
+                    score += squishyThreatBonus;
+                    if (Main.IsDebugEnabled)
+                        Log.Analysis.Debug($"[TauntScorer] SquishyThreat bonus: +{squishyThreatBonus:F0} for {affectedEnemies.Count} enemies");
+                }
+            }
+
             // ★ v3.6.12: TargetPoint 계산 수정
             // - isSelfTarget=true: 캐스터 위치를 타겟으로
             // - !isSelfTarget: CannotTargetSelf 회피를 위해 적절한 오프셋 적용
@@ -464,7 +485,8 @@ namespace CompanionAI_v3.Analysis
             float tauntRange,
             List<BaseUnitEntity> enemies,
             List<BaseUnitEntity> enemiesTargetingAllies,
-            float availableMP)
+            float availableMP,
+            Situation situation = null)  // Phase 4-full: SquishyThreat 통합 위해
         {
             var options = new List<TauntOption>();
 
@@ -491,7 +513,7 @@ namespace CompanionAI_v3.Analysis
 
                     var option = EvaluateTauntFromPosition(
                         tank, tilePosition, taunt, isAoE, isSelfTarget, isTouchRange, aoERadius, tauntRange,
-                        enemies, enemiesTargetingAllies, requiresMove: true, moveCost: moveCost);
+                        enemies, enemiesTargetingAllies, requiresMove: true, moveCost: moveCost, situation: situation);
 
                     if (option != null && option.Score > 0)
                         options.Add(option);
@@ -587,9 +609,18 @@ namespace CompanionAI_v3.Analysis
                 if (Math.Abs(threatUrgency) > 0.01f)
                     score += threatUrgency;
 
+                // Phase 4-full: nearbyEnemies 의 squishy 위협 합산 — ally 가 squishy 면 가중 ↑.
+                float squishyBonus = 0f;
+                if (situation.TargetingMap != null)
+                {
+                    foreach (var enemy in nearbyEnemies)
+                        squishyBonus += situation.TargetingMap.GetSquishyThreatScore(enemy) * WEIGHT_SQUISHY_THREAT_TAUNT;
+                    if (squishyBonus > 0.01f) score += squishyBonus;
+                }
+
                 Log.Analysis.Debug($"[TauntScorer] AllyTarget: {ally.CharacterName} - " +
                     $"enemies={nearbyEnemies.Count}, targetingAllies={targetingAlliesCount}, " +
-                    $"HP={CombatCache.GetHPPercent(ally):P0}, turnThreat={threatUrgency:+0;-0}, score={score:F0}");
+                    $"HP={CombatCache.GetHPPercent(ally):P0}, turnThreat={threatUrgency:+0;-0}, squishy={squishyBonus:+0;-0}, score={score:F0}");
 
                 if (score > bestScore)
                 {

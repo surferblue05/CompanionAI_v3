@@ -37,6 +37,7 @@ namespace CompanionAI_v3.Analysis
             public float SpecialRole { get; set; }    // Healer/Caster 보너스
             public float Difficulty { get; set; }      // ★ v3.8.49: 적 등급 (Boss/Elite 등) 보너스
             public float TurnUrgency { get; set; }    // ★ v3.9.16: 턴 순서 긴급도 (곧 행동할 적 우선)
+            public float SquishyThreat { get; set; }  // Phase 4: 적이 squishy 아군 위협 시 우선 (DPS 최고, Tank 적당, Support 높음)
         }
 
         /// <summary>
@@ -69,16 +70,24 @@ namespace CompanionAI_v3.Analysis
         private const float ENEMY_TANK_PROXIMITY_BONUS = 30f;
         private const float ENEMY_CONFIRMED_KILL_BASE = 40f;
         private const float ENEMY_KILL_EFFICIENCY_RATE = 5f;
-        private const float ENEMY_KILL_EFFICIENCY_CAP = 20f;
+        // Phase 2a: cap 20 → 50. 기존 cap 은 efficiency≥4 부터 모든 신호 묻어버림 (eff=4 dmg/AP 도 흔함).
+        // cap 50 = efficiency≤10 (10 dmg/AP) 까지 비례 — 고효율 단발 vs 저효율 다발 차이가 살아남.
+        private const float ENEMY_KILL_EFFICIENCY_CAP = 50f;
         private const float ENEMY_MULTI_KILL_BONUS = 20f;
         private const float ENEMY_AOE_CLUSTER_BONUS = 10f;
+        // Phase 2a: Overkill 패널티 — 비싼 시퀀스가 HP 대비 과한 데미지면 자원 낭비.
+        //   ratio = TotalDamage / HP. 2x 까지는 무료 (margin), 그 이상은 (ratio-2) × RATE.
+        private const float ENEMY_KILL_OVERKILL_RATE = 4f;
+        private const float ENEMY_KILL_OVERKILL_CAP = 20f;
 
         // ── Hit Chance (ScoreEnemy) ──
         private const float HIT_VERY_LOW_PENALTY = 25f;
         private const float HIT_LOW_PENALTY = 15f;
         private const float HIT_HIGH_BONUS = 10f;
         private const float OPTIMAL_RANGE_BONUS = 8f;
-        private const float FULL_COVER_PENALTY = 12f;
+        // Phase 4-tune (v3.117.27): 12 → 20. Cover 적은 EV 깎는 것 외에 명시적 deprioritize.
+        //   사용자 보고: Cover 안 보스 (Kelermorph) 가 Difficulty +15 + TurnUrgency +23 으로 우선화 — Cover 신호 약함.
+        private const float FULL_COVER_PENALTY = 20f;
         private const float HALF_COVER_PENALTY = 6f;
 
         // ── ScoreAllyForHealing ──
@@ -108,6 +117,17 @@ namespace CompanionAI_v3.Analysis
         private const float TARGET_ISOLATION_RATE = 2f;
         private const float TARGET_PROXIMITY_THRESHOLD = 8f;   // 가장 가까운 아군이 8m 이내 = 이미 교전 중
         private const float TARGET_PROXIMITY_BONUS = 10f;
+
+        // ── Reachability (Phase 2b) ──
+        //   기존: Hittable=false 면 일률 -15. 8 타일 추격 vs 50 타일 추격 동일 취급 → 시나리오 A (멀리 딸피 wisp 우선) 유발.
+        //   현재: 가용 MP 초과 = 사실상 unreachable, MP 내 추격 = ratio 비례 패널티.
+        private const float REACHABILITY_UNREACHABLE_PENALTY = 30f;  // NotHittable -15 위에 추가 → 총 -45
+        private const float REACHABILITY_CHASE_PENALTY_RATE = 20f;   // chase_ratio=1 (MP 100% 소모) → -20
+
+        // ── SquishyThreat (Phase 4) ──
+        //   적이 squishy 아군 위협 시 우선 처치. score = squishyThreatScore × multiplier × weight.SquishyThreat.
+        //   squishyThreatScore = max over allies (threat[0~1] × vulnerability[0.5~1]) → 최대 1.0.
+        private const float SQUISHY_THREAT_MULTIPLIER = 25f;
 
         // ── Priority Target (UnitPartPriorityTarget 인스턴스 레벨 — 도발/마크/겨냥) ──
         // ★ v3.110.21 Phase 3: 게임 UnitPartPriorityTarget이 설정한 우선 타겟에 강한 가점.
@@ -170,7 +190,9 @@ namespace CompanionAI_v3.Analysis
             DebuffState = 0.7f,   // 높음 - DOT 콤보
             SpecialRole = 0.5f,   // 중간
             Difficulty = 0.6f,    // ★ v3.8.49: 중간 - 보스 공격하되 킬 가능한 졸개 우선
-            TurnUrgency = 0.6f   // ★ v3.9.16: 중간 - 곧 행동할 적 킬 우선
+            TurnUrgency = 1.5f,  // Phase 2a: 0.6 → 1.5. 기존 0.6 은 ActedThisRound -10 × 0.6 = -6 으로
+                                 //   KillBonus +40+ 압도 못함. 1.5 로 ±15~37 신호화 → 시나리오 C (이미 행동 끝낸 딸피) 후순위.
+            SquishyThreat = 1.2f // Phase 4: 높음 - DPS 는 squishy 보호 위해 위협 적 우선 처치 (시나리오 B)
         };
 
         // Tank: 가까운 적 우선, 거리 중시
@@ -184,7 +206,8 @@ namespace CompanionAI_v3.Analysis
             DebuffState = 0.2f,   // 낮음
             SpecialRole = 0.3f,   // 낮음
             Difficulty = 1.0f,    // ★ v3.8.49: 매우 높음 - 보스 어그로/교전 최우선
-            TurnUrgency = 0.3f   // ★ v3.9.16: 낮음 - 탱크는 근접 우선, 턴 순서 덜 중요
+            TurnUrgency = 0.3f,  // ★ v3.9.16: 낮음 - 탱크는 근접 우선, 턴 순서 덜 중요
+            SquishyThreat = 0.5f // Phase 4: 중간 - 탱크는 어그로/교전 우선이지만 squishy 보호도 역할
         };
 
         // Support: 안전한 공격, 위협 제거
@@ -198,7 +221,8 @@ namespace CompanionAI_v3.Analysis
             DebuffState = 0.8f,   // 높음 - 디버프 활용
             SpecialRole = 0.9f,   // 높음 - Healer/Caster 우선
             Difficulty = 0.8f,    // ★ v3.8.49: 높음 - 보스에 디버프/CC 집중
-            TurnUrgency = 0.8f   // ★ v3.9.16: 높음 - CC 타이밍 중요 (곧 행동할 적 CC 우선)
+            TurnUrgency = 0.8f,  // ★ v3.9.16: 높음 - CC 타이밍 중요 (곧 행동할 적 CC 우선)
+            SquishyThreat = 1.5f // Phase 4: 매우 높음 - Support 가 squishy 보호 의식 가장 강해야 (CC/디버프로 위협 차단)
         };
 
         // Support 아군 타겟 가중치
@@ -272,12 +296,54 @@ namespace CompanionAI_v3.Analysis
                 float threat = EvaluateThreat(target, situation);
                 score += threat * ENEMY_THREAT_MULTIPLIER * weights.Threat;
 
+                // 4b. Phase 4 SquishyThreat — 적이 squishy 아군 위협 시 우선 처치.
+                //   GetSquishyThreatScore = max over allies (next-turn-threat × vulnerability) ∈ [0, 1]
+                //   Multiplier 25 = 풀 위협 (threat=1, vuln=1) 시 +25 × weight.
+                //   DPS=1.2 → +30, Tank=0.5 → +12.5, Support=1.5 → +37.5.
+                if (situation.TargetingMap != null)
+                {
+                    float squishyThreat = situation.TargetingMap.GetSquishyThreatScore(target);
+                    if (squishyThreat > 0f)
+                    {
+                        float bonus = squishyThreat * SQUISHY_THREAT_MULTIPLIER * weights.SquishyThreat;
+                        score += bonus;
+                        if (Main.IsDebugEnabled)
+                        {
+                            var threatenedAlly = situation.TargetingMap.GetMostThreatenedAlly(target);
+                            Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: +{bonus:F0} squishy threat (→ {threatenedAlly?.CharacterName}, score {squishyThreat:F2})");
+                        }
+                    }
+                }
+
                 // 5. Hittable 여부
                 bool isHittable = situation.HittableEnemies?.Contains(target) ?? false;
                 if (isHittable)
                     score += ENEMY_HITTABLE_BONUS * weights.Hittable;
                 else
                     score -= ENEMY_NOT_HITTABLE_PENALTY;
+
+                // 5b. Phase 2b — Reachability path-cost. Hittable=false 인 적의 추격 비용 차별화.
+                if (!isHittable && situation.PrimaryAttack != null && situation.CurrentMP > 0)
+                {
+                    float distanceTiles = CombatCache.GetDistanceInTiles(situation.Unit, target);
+                    float attackRangeTiles = CombatAPI.GetAbilityRangeInTiles(situation.PrimaryAttack);
+                    float chaseTilesNeeded = Math.Max(0f, distanceTiles - attackRangeTiles);
+
+                    if (chaseTilesNeeded > situation.CurrentMP)
+                    {
+                        score -= REACHABILITY_UNREACHABLE_PENALTY;
+                        if (Main.IsDebugEnabled)
+                            Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: -{REACHABILITY_UNREACHABLE_PENALTY:F0} unreachable (chase {chaseTilesNeeded:F1}t > MP {situation.CurrentMP:F1}t)");
+                    }
+                    else if (chaseTilesNeeded > 0f)
+                    {
+                        float chaseRatio = chaseTilesNeeded / situation.CurrentMP;
+                        float chasePenalty = chaseRatio * REACHABILITY_CHASE_PENALTY_RATE;
+                        score -= chasePenalty;
+                        if (Main.IsDebugEnabled)
+                            Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: -{chasePenalty:F0} chase cost ({chaseTilesNeeded:F1}t / MP {situation.CurrentMP:F1}t)");
+                    }
+                }
 
                 // 6. 디버프 상태 (DOT 등)
                 if (HasHarmfulDebuff(target))
@@ -288,6 +354,9 @@ namespace CompanionAI_v3.Analysis
                 // ★ v3.24.0: Expected Damage Value (EV) 스코어링
                 // 이전: 이산적 hit threshold (-25/-15/+10) + 별도 damage
                 // 변경: hitChance × EstimateDamage / targetHP → 연속 커브 (확률적 기대값)
+                // Phase 4-tune (v3.117.27): evEffectivenessMultiplier 노출 — Difficulty/TurnUrgency 보너스 가중에 사용.
+                //   효과 없는 (사거리 ↑/Cover/저데미지) 적의 Difficulty/Urgency 가산 무력화.
+                float evEffectivenessMultiplier = 1.0f;  // 기본 1.0 (PrimaryAttack 없으면 unaffected)
                 if (situation.PrimaryAttack != null)
                 {
                     var hitInfo = CombatCache.GetHitChance(situation.PrimaryAttack, situation.Unit, target);
@@ -299,6 +368,11 @@ namespace CompanionAI_v3.Analysis
                         float expectedDamage = hitFraction * estimatedDmgForEV;
                         float evTargetHP = CombatAPI.GetActualHP(target);
                         float evRatio = expectedDamage / Mathf.Max(evTargetHP, 1f);
+
+                        // evRatio 0    → multiplier 0 (useless to attack)
+                        // evRatio 0.25 → multiplier 0.5
+                        // evRatio 0.5+ → multiplier 1.0 (full bonus)
+                        evEffectivenessMultiplier = Math.Min(1.0f, evRatio * 2f);
 
                         float evScore = CurvePresets.ExpectedDamageRatio.Evaluate(evRatio);
                         score += evScore;
@@ -429,8 +503,11 @@ namespace CompanionAI_v3.Analysis
                 }
                 if (difficultyScore > 0f)
                 {
-                    score += difficultyScore * weights.Difficulty;
-                    Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: +{difficultyScore * weights.Difficulty:F0} difficulty ({difficultyType})");
+                    // Phase 4-tune (v3.117.27): EV-scaled — 효과 없는 보스에게 풀 보너스 주는 문제 해결.
+                    //   Cover 안 보스 (EV=0.01) = 보너스 ~0. 확정 킬 가능 보스 (EV=0.5+) = 풀 보너스.
+                    float bonus = difficultyScore * weights.Difficulty * evEffectivenessMultiplier;
+                    score += bonus;
+                    Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: +{bonus:F0} difficulty ({difficultyType}, eff={evEffectivenessMultiplier:F2})");
                 }
 
                 // ★ v3.2.30: 킬 시뮬레이터 확정 킬 보너스 (설정으로 토글 가능)
@@ -440,9 +517,30 @@ namespace CompanionAI_v3.Analysis
                     var killSequence = KillSimulator.FindKillSequence(situation, target);
                     if (killSequence != null && killSequence.IsConfirmedKill)
                     {
-                        // 확정 킬 가능 타겟에 높은 보너스
-                        // 효율이 높을수록 (낮은 AP로 킬) 추가 보너스
-                        float killBonus = ENEMY_CONFIRMED_KILL_BASE + Math.Min(killSequence.Efficiency * ENEMY_KILL_EFFICIENCY_RATE, ENEMY_KILL_EFFICIENCY_CAP);
+                        // ★ v3.117.0 Phase D: KillProbability 가중 — 낮은 명중률로 "이론상 킬" 인 시퀀스는 보너스 페널티
+                        //   기존: 명중률 무관 baseBonus 풀가산 → 25% 명중률 자리도 100% 자리와 동일 점수
+                        //   현재: bonus *= killProb. 0.85 이상 (IsHighProbabilityKill) 은 사실상 풀보너스 유지
+                        // ★ v3.117.1 Phase D 보정: floor 0.10 → 0.02. 인게임 검증에서 P=0.01 인데 bonus 86 (baseBonus*0.10)
+                        //   가산되는 케이스 발견. 0.10 은 너무 관대 — "거의 못 맞춤" 도 10% 가산.
+                        //   0.02 = 2% — 진짜 0 만 막고 그 외는 거의 비례.
+                        float pKill = Math.Max(0.02f, killSequence.KillProbability);
+                        float baseBonus = ENEMY_CONFIRMED_KILL_BASE + Math.Min(killSequence.Efficiency * ENEMY_KILL_EFFICIENCY_RATE, ENEMY_KILL_EFFICIENCY_CAP);
+                        float killBonus = baseBonus * pKill;
+
+                        // Phase 2a: Overkill 패널티 — 비싼 시퀀스 (>1 AP) 가 HP 대비 과한 데미지면 자원 낭비.
+                        //   1AP 단발은 cheap 이라 overkill 도 OK. 다발/특수 ability 는 신중.
+                        if (killSequence.APCost > 1f)
+                        {
+                            float currentHP = (float)Math.Max(target.HitPointsLeft, 1L);
+                            float overkillRatio = killSequence.TotalDamage / currentHP;
+                            if (overkillRatio > 2f)
+                            {
+                                float overkillPenalty = Math.Min((overkillRatio - 2f) * ENEMY_KILL_OVERKILL_RATE, ENEMY_KILL_OVERKILL_CAP);
+                                killBonus -= overkillPenalty;
+                                if (Main.IsDebugEnabled)
+                                    Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: -{overkillPenalty:F0} overkill ({overkillRatio:F1}x ratio, AP={killSequence.APCost})");
+                            }
+                        }
 
                         // ★ v3.5.83: AOE 다중 킬 보너스
                         // AOE 1능력으로 킬 가능하면, 패턴 내 다른 적까지 동시 킬 가능성 평가
@@ -466,7 +564,7 @@ namespace CompanionAI_v3.Analysis
                         }
 
                         score += killBonus;
-                        Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: +{killBonus:F0} ConfirmedKill ({killSequence.Abilities.Count} abilities, {killSequence.TotalDamage:F0} dmg)");
+                        Log.Analysis.Debug($"[TargetScorer] {target.CharacterName}: +{killBonus:F0} ConfirmedKill ({killSequence.Abilities.Count} abilities, {killSequence.TotalDamage:F0} dmg, P(kill)={killSequence.KillProbability:F2})");
                     }
                 }
 

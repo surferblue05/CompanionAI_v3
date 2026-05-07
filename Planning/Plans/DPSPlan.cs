@@ -258,9 +258,21 @@ namespace CompanionAI_v3.Planning.Plans
                 if (killSequence != null && killSequence.IsConfirmedKill && killSequence.APCost <= remainingAP)
                 {
                     // ★ v3.11.0: 전략 기반 Kill Seq 결정 — 전략이 있으면 비교 스킵
+                    // v3.117.28: multi-kill AoE 가 strategy override — 모든 strategy 보다 우선 평가
+                    //   사용자 보고: Pasqal 케이스 분석 시 strategy=KillSequence 전환 후 비교 스킵 →
+                    //   AoE 가 더 가치 있어도 무시. 게임 action denial 원칙: 2명+ 확정 kill > 1명 확정 kill.
+                    //   웹 조사: Soldier 류 (Argenta cone 5m) 는 multi-kill 자주 → 자연스럽게 우선화.
+                    //   Tech-Priest 류 (Pasqal plasma 1m) 는 multi-kill 드뭄 → kill seq 유지.
                     bool killSeqDeferred = false;
 
-                    if (strategy?.PrioritizesKillSequence == true)
+                    int aoeMultiKills = CountAoEConfirmedKills(situation);
+                    if (aoeMultiKills >= 2)
+                    {
+                        killSeqDeferred = true;
+                        pendingKillSequence = killSequence;
+                        Log.Planning.Info($"[DPS] Phase 3: Multi-kill AoE ({aoeMultiKills} confirmed) overrides Kill Seq — deferring");
+                    }
+                    else if (strategy?.PrioritizesKillSequence == true)
                     {
                         // 전략이 킬 시퀀스를 추천 → 바로 실행
                         Log.Planning.Info($"[DPS] Phase 3: Strategy recommends KillSequence — executing directly");
@@ -333,18 +345,19 @@ namespace CompanionAI_v3.Planning.Plans
                                 }
                                 else
                                 {
-                                    // ★ v3.8.54: Kill Sequence 공격의 아군 안전 체크 (CanTargetFriends/사선)
-                                    if (CombatAPI.IsPointTargetAbility(ability) || ability.Blueprint?.CanTargetFriends == true)
+                                    // ★ v3.117.8 (옵션 B): caller guard 제거 — AoESafetyChecker 가 단일 진실 source.
+                                    // ★ v3.117.18: destination-aware (kill seq 가 이동 후 cast 면 destination 기준)
+                                    UnityEngine.Vector3 ksCasterPos = (tacticalEval != null && tacticalEval.ShouldMoveFirst && tacticalEval.MoveDestination.HasValue)
+                                        ? tacticalEval.MoveDestination.Value
+                                        : situation.Unit.Position;
+                                    if (!AoESafetyChecker.IsAoESafeForUnitTargetFromPosition(ability, ksCasterPos, situation.Unit, killSequence.Target, situation.Allies))
                                     {
-                                        if (!AoESafetyChecker.IsAoESafeForUnitTarget(ability, situation.Unit, killSequence.Target, situation.Allies))
-                                        {
-                                            Log.Planning.Info($"[DPS] Phase 3: Kill sequence BLOCKED by ally safety: {ability.Name} -> {killSequence.Target.CharacterName}");
-                                            // 킬 시퀀스에서 추가된 액션 제거 + AP 복원
-                                            while (actions.Count > actionsBeforeKillSeq)
-                                                actions.RemoveAt(actions.Count - 1);
-                                            remainingAP = savedAPBeforeKillSeq;
-                                            break;
-                                        }
+                                        Log.Planning.Info($"[DPS] Phase 3: Kill sequence BLOCKED by ally safety: {ability.Name} -> {killSequence.Target.CharacterName} (from {(ksCasterPos != situation.Unit.Position ? "destination" : "current")})");
+                                        // 킬 시퀀스에서 추가된 액션 제거 + AP 복원
+                                        while (actions.Count > actionsBeforeKillSeq)
+                                            actions.RemoveAt(actions.Count - 1);
+                                        remainingAP = savedAPBeforeKillSeq;
+                                        break;
                                     }
                                     var atkAction = PlannedAction.Attack(ability, killSequence.Target, "Kill sequence attack", apCost);
                                     atkAction.GroupTag = killGroupTag;  // ★ v3.8.86
@@ -546,24 +559,29 @@ namespace CompanionAI_v3.Planning.Plans
 
                 if (hasAoEOpportunity)
                 {
+                    // ★ v3.117.16/19: 이동 후 cast 가 plan 됐으면 destination 기준 검사 (사용자 지적: plan 정확성).
+                    UnityEngine.Vector3? effPos = (tacticalEval != null && tacticalEval.ShouldMoveFirst && tacticalEval.MoveDestination.HasValue)
+                        ? tacticalEval.MoveDestination
+                        : (UnityEngine.Vector3?)null;
+
                     // Point-target AoE 시도
-                    var aoE = PlanAoEAttack(situation, ref remainingAP);
+                    var aoE = PlanAoEAttack(situation, ref remainingAP, effPos);
                     if (aoE != null)
                     {
                         actions.Add(aoE);
                         didPlanAttack = true;
-                        Log.Planning.Info($"[DPS] Phase 4.4: Point-target AOE planned");
+                        Log.Planning.Info($"[DPS] Phase 4.4: Point-target AOE planned{(effPos.HasValue ? " (from destination)" : "")}");
                     }
 
                     // ★ v3.8.96: Unit-targeted AoE 시도 (Burst, Scatter, 기타 모든 유닛 타겟 AoE)
                     if (!didPlanAttack)
                     {
-                        var unitAoE = PlanUnitTargetedAoE(situation, ref remainingAP);
+                        var unitAoE = PlanUnitTargetedAoE(situation, ref remainingAP, effPos);
                         if (unitAoE != null)
                         {
                             actions.Add(unitAoE);
                             didPlanAttack = true;
-                            Log.Planning.Info($"[DPS] Phase 4.4b: Unit-targeted AOE planned");
+                            Log.Planning.Info($"[DPS] Phase 4.4b: Unit-targeted AOE planned{(effPos.HasValue ? " (from destination)" : "")}");
                         }
                     }
                 }
@@ -616,6 +634,16 @@ namespace CompanionAI_v3.Planning.Plans
                     }
                     else
                     {
+                        // ★ v3.117.8 (옵션 B): caller guard 제거 — AoESafetyChecker 가 단일 진실 source.
+                        // ★ v3.117.18: destination-aware (deferred 가 이동 후 cast 면 destination 기준)
+                        UnityEngine.Vector3 dksCasterPos = (tacticalEval != null && tacticalEval.ShouldMoveFirst && tacticalEval.MoveDestination.HasValue)
+                            ? tacticalEval.MoveDestination.Value
+                            : situation.Unit.Position;
+                        if (!AoESafetyChecker.IsAoESafeForUnitTargetFromPosition(ability, dksCasterPos, situation.Unit, pendingKillSequence.Target, situation.Allies))
+                        {
+                            Log.Planning.Info($"[DPS] Deferred kill seq attack BLOCKED by ally safety: {ability.Name} -> {pendingKillSequence.Target.CharacterName} (from {(dksCasterPos != situation.Unit.Position ? "destination" : "current")})");
+                            break;  // 시퀀스 중단 — 다음 ability 도 같은 타겟이라 의미 없음
+                        }
                         action = PlannedAction.Attack(ability, pendingKillSequence.Target, "Deferred kill seq attack", apCost);
                     }
                     action.GroupTag = killGroupTag;
@@ -1684,6 +1712,64 @@ namespace CompanionAI_v3.Planning.Plans
                 Log.Planning.Debug($"[DPS] AoEValue: best={bestAbilityName} hitting {bestClusterCount} enemies, value={bestValue:F0}");
 
             return bestValue;
+        }
+
+        /// <summary>
+        /// v3.117.28: AoE 가 confirmed kill 가능한 적 수의 최대값 (모든 AoE 능력 × cluster 평가).
+        /// "확정 킬" 기준: 평균 데미지 ≥ 적 HP × 0.95 (95%+ 보장 = 사실상 확정).
+        ///
+        /// 의도: kill seq vs AoE 비교 시 multi-kill AoE 가 강한 신호 — strategy.PrioritizesKillSequence
+        /// 이라도 AoE 가 2명 이상 확정 kill 가능하면 우선화 (action denial × 2).
+        ///
+        /// Soldier 류 (Argenta burst, radius 5m) — 다중 적 cluster 자주 → 자연스럽게 multi-kill.
+        /// Tech-Priest 류 (Pasqal plasma overcharge, radius 1m) — multi-kill 어려움 → kill seq 유지.
+        /// </summary>
+        private int CountAoEConfirmedKills(Situation situation)
+        {
+            if (situation?.AvailableAoEAttacks == null || situation.AvailableAoEAttacks.Count == 0)
+                return 0;
+
+            int minEnemies = ClusterDetector.MIN_CLUSTER_SIZE;
+            int maxKills = 0;
+
+            foreach (var aoeAbility in situation.AvailableAoEAttacks)
+            {
+                float apCost = CombatAPI.GetAbilityAPCost(aoeAbility);
+                if (apCost > situation.CurrentAP) continue;
+
+                float aoERadius = CombatAPI.GetAoERadius(aoeAbility);
+                if (aoERadius <= 0) aoERadius = 5f;
+
+                var clusters = ClusterDetector.FindClusters(situation.Enemies, aoERadius);
+
+                foreach (var cluster in clusters)
+                {
+                    if (cluster.Count < minEnemies) continue;
+
+                    int killsInCluster = 0;
+                    foreach (var enemy in cluster.Enemies)
+                    {
+                        if (enemy == null || !enemy.IsConscious) continue;
+
+                        var (minDmg, maxDmg, _) = CombatAPI.GetDamagePrediction(aoeAbility, enemy);
+                        float avgDmg = (minDmg + maxDmg) / 2f;
+                        float enemyHP = CombatAPI.GetActualHP(enemy);
+                        if (enemyHP <= 0) continue;
+
+                        // 확정 kill 기준: 평균 데미지 ≥ HP × 0.95
+                        if (avgDmg >= enemyHP * 0.95f)
+                            killsInCluster++;
+                    }
+
+                    if (killsInCluster > maxKills)
+                        maxKills = killsInCluster;
+                }
+            }
+
+            if (maxKills >= 2 && Main.IsDebugEnabled)
+                Log.Planning.Debug($"[DPS] AoE multi-kill detected: {maxKills} confirmed kills available");
+
+            return maxKills;
         }
 
         #endregion

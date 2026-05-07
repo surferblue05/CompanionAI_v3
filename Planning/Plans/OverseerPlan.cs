@@ -783,21 +783,26 @@ namespace CompanionAI_v3.Planning.Plans
             if (!didPlanAoE && remainingAP >= 1f && situation.HasAoEAttacks &&
                 (strategyRecommendsAoE || situation.Enemies.Count >= minEnemiesForAoE))
             {
-                var aoE = PlanAoEAttack(situation, ref remainingAP);
+                // ★ v3.117.18/19: 이동 후 cast 가 plan 됐으면 destination 기준 검사 (DPS 와 동일 패턴)
+                UnityEngine.Vector3? effPos = (tacticalEval != null && tacticalEval.ShouldMoveFirst && tacticalEval.MoveDestination.HasValue)
+                    ? tacticalEval.MoveDestination
+                    : (UnityEngine.Vector3?)null;
+
+                var aoE = PlanAoEAttack(situation, ref remainingAP, effPos);
                 if (aoE != null)
                 {
                     actions.Add(aoE);
                     didPlanAoE = true;
-                    Log.Planning.Info($"[Overseer] Phase 4.97: Point-target AoE planned");
+                    Log.Planning.Info($"[Overseer] Phase 4.97: Point-target AoE planned{(effPos.HasValue ? " (from destination)" : "")}");
                 }
                 if (!didPlanAoE)
                 {
-                    var unitAoE = PlanUnitTargetedAoE(situation, ref remainingAP);
+                    var unitAoE = PlanUnitTargetedAoE(situation, ref remainingAP, effPos);
                     if (unitAoE != null)
                     {
                         actions.Add(unitAoE);
                         didPlanAoE = true;
-                        Log.Planning.Info($"[Overseer] Phase 4.97b: Unit-targeted AoE planned");
+                        Log.Planning.Info($"[Overseer] Phase 4.97b: Unit-targeted AoE planned{(effPos.HasValue ? " (from destination)" : "")}");
                     }
                 }
             }

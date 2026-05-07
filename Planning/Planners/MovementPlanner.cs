@@ -781,7 +781,8 @@ namespace CompanionAI_v3.Planning.Planners
                     situation.MinSafeDistance,
                     effectiveMP,
                     role,
-                    situation.LastMoveOrigin  // ★ v3.74.2: 진동 방지
+                    situation.LastMoveOrigin,  // ★ v3.74.2: 진동 방지
+                    situation                  // Phase 4-full: AllyProtectionBonus 계산 위해 전달
                 );
 
                 // ★ v3.8.47: HittableEnemyCount가 0이면 유효한 공격 위치가 아님

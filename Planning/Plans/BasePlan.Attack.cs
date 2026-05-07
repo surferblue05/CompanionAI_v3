@@ -59,8 +59,9 @@ namespace CompanionAI_v3.Planning.Plans
             => AttackPlanner.IsAbilityExcluded(ability, excludeAbilityGuids);
 
         // ★ v3.1.16: AOE 공격 계획 (모든 Role에서 사용 가능)
-        protected PlannedAction PlanAoEAttack(Situation situation, ref float remainingAP)
-            => AttackPlanner.PlanAoEAttack(situation, ref remainingAP, RoleName);
+        // ★ v3.117.19: effectiveCasterPosition 추가 — 이동 후 cast 가 plan 됐을 때 destination 기준 검사
+        protected PlannedAction PlanAoEAttack(Situation situation, ref float remainingAP, UnityEngine.Vector3? effectiveCasterPosition = null)
+            => AttackPlanner.PlanAoEAttack(situation, ref remainingAP, RoleName, effectiveCasterPosition);
 
         // ★ v3.1.29: Self-Targeted AOE 계획 (BladeDance 등)
         protected PlannedAction PlanSelfTargetedAoE(Situation situation, ref float remainingAP)
@@ -90,8 +91,8 @@ namespace CompanionAI_v3.Planning.Plans
 
         /// <summary>★ v3.8.96: 유닛 타겟 AoE 공격 계획 (Burst/Scatter/기타 모든 유닛 타겟 AoE)
         /// Phase 4.3(Self), 4.3b(Melee), 4.4(Point)에서 처리하지 않는 나머지 모든 AoE</summary>
-        protected PlannedAction PlanUnitTargetedAoE(Situation situation, ref float remainingAP)
-            => AttackPlanner.PlanUnitTargetedAoEAttack(situation, ref remainingAP, RoleName);
+        protected PlannedAction PlanUnitTargetedAoE(Situation situation, ref float remainingAP, UnityEngine.Vector3? effectiveCasterPosition = null)
+            => AttackPlanner.PlanUnitTargetedAoEAttack(situation, ref remainingAP, RoleName, effectiveCasterPosition);
 
         /// <summary>★ v3.9.08: AoE 재배치 — 아군 피격으로 AoE 차단 시 이동 후 AoE 시전</summary>
         protected (PlannedAction move, PlannedAction aoE) PlanAoEWithReposition(

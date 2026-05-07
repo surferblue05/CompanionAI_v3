@@ -424,14 +424,11 @@ namespace CompanionAI_v3.Planning.Planners
                     return null;  // ★ v3.6.10: 명시적 null 반환
                 }
 
-                // ★ v3.8.45: PrimaryAttack 폴백도 아군 안전 체크 (AOE + CanTargetFriends)
-                if (CombatAPI.IsPointTargetAbility(situation.PrimaryAttack) || situation.PrimaryAttack.Blueprint?.CanTargetFriends == true)
+                // ★ v3.117.8 (옵션 B): caller guard 제거 — AoESafetyChecker 가 단일 진실 source.
+                if (!AoESafetyChecker.IsAoESafeForUnitTarget(situation.PrimaryAttack, situation.Unit, target, situation.Allies))
                 {
-                    if (!AoESafetyChecker.IsAoESafeForUnitTarget(situation.PrimaryAttack, situation.Unit, target, situation.Allies))
-                    {
-                        if (Main.IsDebugEnabled) Log.Planning.Debug($"[AttackPlanner] PrimaryAttack ally safety blocked: {situation.PrimaryAttack.Name} -> {target.CharacterName}");
-                        return null;
-                    }
+                    if (Main.IsDebugEnabled) Log.Planning.Debug($"[AttackPlanner] PrimaryAttack ally safety blocked: {situation.PrimaryAttack.Name} -> {target.CharacterName}");
+                    return null;
                 }
 
                 return situation.PrimaryAttack;
@@ -509,14 +506,14 @@ namespace CompanionAI_v3.Planning.Planners
                 {
                     attack = CombatAPI.FindAnyAttackAbility(situation.Unit, situation.RangePreference);
 
-                    // ★ v3.8.45: FindAnyAttackAbility 폴백도 아군 안전 체크
-                    // CanTargetFriends 능력(점사 사격 등)이 반환될 수 있음
-                    if (attack != null && effectiveTarget != null &&
-                        (CombatAPI.IsPointTargetAbility(attack) || attack.Blueprint?.CanTargetFriends == true))
+                    // ★ v3.117.8 (옵션 B): caller guard 제거 — AoESafetyChecker 가 단일 진실 source.
+                    // ★ v3.117.17: moveDestination 받으면 그 위치 기준 safety 검사 (plan 정확성)
+                    if (attack != null && effectiveTarget != null)
                     {
-                        if (!AoESafetyChecker.IsAoESafeForUnitTarget(attack, situation.Unit, effectiveTarget, situation.Allies))
+                        UnityEngine.Vector3 effPos = moveDestination ?? situation.Unit.Position;
+                        if (!AoESafetyChecker.IsAoESafeForUnitTargetFromPosition(attack, effPos, situation.Unit, effectiveTarget, situation.Allies))
                         {
-                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PostMoveAttack FindAny ally safety blocked: {attack.Name} -> {effectiveTarget.CharacterName}");
+                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PostMoveAttack FindAny ally safety blocked: {attack.Name} -> {effectiveTarget.CharacterName} (from {(moveDestination.HasValue ? "destination" : "current")})");
                             attack = null;
                         }
                     }
@@ -872,9 +869,12 @@ namespace CompanionAI_v3.Planning.Planners
         public static PlannedAction PlanAoEAttack(
             Situation situation,
             ref float remainingAP,
-            string roleName)
+            string roleName,
+            UnityEngine.Vector3? effectiveCasterPosition = null)
         {
-            // Point 타겟 AOE 능력 찾기
+            UnityEngine.Vector3 casterPos = effectiveCasterPosition ?? situation.Unit.Position;
+            bool fromDestination = effectiveCasterPosition.HasValue;
+
             var aoEAbilities = situation.AvailableAttacks
                 .Where(a => CombatAPI.IsPointTargetAbility(a))
                 .Where(a => !AbilityDatabase.IsReload(a))
@@ -891,38 +891,33 @@ namespace CompanionAI_v3.Planning.Planners
                 var patternType = CombatAPI.GetPatternType(ability);
                 AoESafetyChecker.AoEScore bestResult = null;
 
-                // ★ v3.1.18: 패턴 타입에 따른 분기
-                // ★ v3.1.29: MinEnemiesForAoE 설정값 적용
-                // ★ v3.8.09: GetActualIsDirectional() 사용으로 정확한 판정
                 int minEnemiesForAoE = ClusterDetector.MIN_CLUSTER_SIZE;
                 bool isActuallyDirectional = CombatAPI.GetActualIsDirectional(ability);
 
                 if (isActuallyDirectional)
                 {
-                    // 방향성 패턴 (Cone/Ray/Sector) - 타겟 기반
-                    bestResult = AoESafetyChecker.FindBestDirectionalAoETarget(
-                        ability,
-                        situation.Unit,
-                        situation.Enemies,
-                        situation.Allies,
-                        minEnemiesRequired: minEnemiesForAoE);
+                    bestResult = fromDestination
+                        ? AoESafetyChecker.FindBestDirectionalAoETargetFromPosition(
+                            ability, situation.Unit, casterPos,
+                            situation.Enemies, situation.Allies,
+                            minEnemiesRequired: minEnemiesForAoE)
+                        : AoESafetyChecker.FindBestDirectionalAoETarget(
+                            ability, situation.Unit,
+                            situation.Enemies, situation.Allies,
+                            minEnemiesRequired: minEnemiesForAoE);
 
                     if (bestResult == null || !bestResult.IsSafe) continue;
 
-                    // 방향성 패턴은 주 타겟 유닛으로 타겟팅
                     var primaryTarget = bestResult.AffectedUnits
                         .FirstOrDefault(u => situation.Unit.CombatGroup.IsEnemy(u));
 
                     if (primaryTarget == null) continue;
 
-                    // ★ v3.9.92: DangerousAoE CanTargetEnemies=false — 포인트 타겟으로 전환
-                    // Cone/Ray 패턴은 방향만 지정하면 됨 → 클릭 사거리 내 방향 포인트 사용
                     bool isDangerousAoENoUnitTarget = AbilityDatabase.IsDangerousAoE(ability)
                         && ability.Blueprint != null && !ability.Blueprint.CanTargetEnemies;
 
                     if (isDangerousAoENoUnitTarget)
                     {
-                        var casterPos = situation.Unit.Position;
                         var toTarget = primaryTarget.Position - casterPos;
                         float distMeters = toTarget.magnitude;
                         if (distMeters < 0.01f) continue;
@@ -932,16 +927,31 @@ namespace CompanionAI_v3.Planning.Planners
                         float targetDist = Math.Min(clickRangeMeters * 0.95f, distMeters);
                         var directionPoint = casterPos + direction * targetDist;
 
-                        string dirReason;
-                        if (!CombatAPI.CanUseAbilityOnPoint(ability, directionPoint, out dirReason))
+                        // fromDestination=true 면 game API 가 actual caster pos 기준이라 false negative 가능 → 수동 사거리 검사로 대체.
+                        // execution-time recheck 가 최종 보호.
+                        if (fromDestination)
                         {
-                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] DangerousAoE direction blocked: {ability.Name} - {dirReason}");
-                            continue;
+                            float distTiles = CombatAPI.MetersToTiles(targetDist);
+                            float maxRangeTiles = CombatAPI.GetAbilityRangeInTiles(ability);
+                            if (distTiles > maxRangeTiles)
+                            {
+                                if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] DangerousAoE direction out of range from destination: {ability.Name} ({distTiles:F1}/{maxRangeTiles:F1} tiles)");
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            string dirReason;
+                            if (!CombatAPI.CanUseAbilityOnPoint(ability, directionPoint, out dirReason))
+                            {
+                                if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] DangerousAoE direction blocked: {ability.Name} - {dirReason}");
+                                continue;
+                            }
                         }
 
                         remainingAP -= cost;
                         Log.Planning.Info($"[{roleName}] Directional DangerousAoE ({patternType}): {ability.Name} -> direction of {primaryTarget.CharacterName} " +
-                            $"- {bestResult.EnemiesHit} enemies, {bestResult.AlliesHit} allies");
+                            $"- {bestResult.EnemiesHit} enemies, {bestResult.AlliesHit} allies{(fromDestination ? " (from destination)" : "")}");
 
                         return PlannedAction.PositionalAttack(
                             ability,
@@ -950,18 +960,30 @@ namespace CompanionAI_v3.Planning.Planners
                             cost);
                     }
 
-                    // 유닛 타겟 검증 (기존 로직)
                     var targetWrapper = new TargetWrapper(primaryTarget);
-                    string reason;
-                    if (!CombatAPI.CanUseAbilityOn(ability, targetWrapper, out reason))
+                    if (fromDestination)
                     {
-                        if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] Directional AOE blocked: {ability.Name} - {reason}");
-                        continue;
+                        float distTiles = CombatAPI.MetersToTiles(UnityEngine.Vector3.Distance(casterPos, primaryTarget.Position));
+                        float maxRangeTiles = CombatAPI.GetAbilityRangeInTiles(ability);
+                        if (distTiles > maxRangeTiles)
+                        {
+                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] Directional AOE out of range from destination: {ability.Name} ({distTiles:F1}/{maxRangeTiles:F1} tiles)");
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        string reason;
+                        if (!CombatAPI.CanUseAbilityOn(ability, targetWrapper, out reason))
+                        {
+                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] Directional AOE blocked: {ability.Name} - {reason}");
+                            continue;
+                        }
                     }
 
                     remainingAP -= cost;
                     Log.Planning.Info($"[{roleName}] Directional AOE ({patternType}): {ability.Name} -> {primaryTarget.CharacterName} " +
-                        $"- {bestResult.EnemiesHit} enemies, {bestResult.AlliesHit} allies");
+                        $"- {bestResult.EnemiesHit} enemies, {bestResult.AlliesHit} allies{(fromDestination ? " (from destination)" : "")}");
 
                     return PlannedAction.Attack(
                         ability,
@@ -972,12 +994,18 @@ namespace CompanionAI_v3.Planning.Planners
                 else
                 {
                     // Circle 패턴 - 위치 기반
-                    // ★ v3.3.00: 클러스터 탐지 사용 여부 체크
                     bool useAoEOptimization = situation.CharacterSettings?.UseAoEOptimization ?? true;
 
-                    if (useAoEOptimization)
+                    if (fromDestination)
                     {
-                        // 클러스터 기반 최적 위치 탐색
+                        // Cluster 경로는 caster.Position 의존이라 destination-aware 미지원 → 단순 from-position 모드 사용
+                        bestResult = AoESafetyChecker.FindBestAoEPositionFromPosition(
+                            ability, situation.Unit, casterPos,
+                            situation.Enemies, situation.Allies,
+                            minEnemiesRequired: minEnemiesForAoE);
+                    }
+                    else if (useAoEOptimization)
+                    {
                         bestResult = AoESafetyChecker.FindBestAoEPositionWithClusters(
                             ability,
                             situation.Unit,
@@ -987,7 +1015,6 @@ namespace CompanionAI_v3.Planning.Planners
                     }
                     else
                     {
-                        // 레거시 방식
                         bestResult = AoESafetyChecker.FindBestAoEPosition(
                             ability,
                             situation.Unit,
@@ -998,18 +1025,30 @@ namespace CompanionAI_v3.Planning.Planners
 
                     if (bestResult == null || !bestResult.IsSafe) continue;
 
-                    // Point 타겟 검증
-                    string reason;
-                    if (!CombatAPI.CanUseAbilityOnPoint(ability, bestResult.Position, out reason))
+                    if (fromDestination)
                     {
-                        if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] AOE blocked: {ability.Name} - {reason}");
-                        continue;
+                        float distTiles = CombatAPI.MetersToTiles(UnityEngine.Vector3.Distance(casterPos, bestResult.Position));
+                        float maxRangeTiles = CombatAPI.GetAbilityRangeInTiles(ability);
+                        if (distTiles > maxRangeTiles)
+                        {
+                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] AOE out of range from destination: {ability.Name} ({distTiles:F1}/{maxRangeTiles:F1} tiles)");
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        string reason;
+                        if (!CombatAPI.CanUseAbilityOnPoint(ability, bestResult.Position, out reason))
+                        {
+                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] AOE blocked: {ability.Name} - {reason}");
+                            continue;
+                        }
                     }
 
                     remainingAP -= cost;
-                    string aoEMethod = useAoEOptimization ? "Cluster" : "Legacy";
+                    string aoEMethod = fromDestination ? "FromPos" : (useAoEOptimization ? "Cluster" : "Legacy");
                     Log.Planning.Info($"[{roleName}] AOE ({aoEMethod}): {ability.Name} at ({bestResult.Position.x:F1},{bestResult.Position.z:F1}) " +
-                        $"- {bestResult.EnemiesHit} enemies, {bestResult.AlliesHit} allies");
+                        $"- {bestResult.EnemiesHit} enemies, {bestResult.AlliesHit} allies{(fromDestination ? " (from destination)" : "")}");
 
                     return PlannedAction.PositionalAttack(
                         ability,
@@ -1031,10 +1070,18 @@ namespace CompanionAI_v3.Planning.Planners
         public static PlannedAction PlanUnitTargetedAoEAttack(
             Situation situation,
             ref float remainingAP,
-            string roleName)
+            string roleName,
+            UnityEngine.Vector3? effectiveCasterPosition = null)
         {
             if (situation.AvailableAoEAttacks == null || situation.AvailableAoEAttacks.Count == 0)
                 return null;
+
+            // ★ v3.117.16: effectiveCasterPosition — 이동 후 cast 가 plan 됐을 때 destination 기준 검사.
+            //   사용자 지적: plan 자체가 정확해야 — execution-time recheck 만으로는 의미 없음 (turn 낭비).
+            //   기존: situation.Unit.Position (이동 전) 기준 → friendly fire 잘못 safe 판정.
+            //   현재: effectiveCasterPosition 받으면 그 위치 기준 검사 → 정확한 plan.
+            //   호출자: shouldMoveBeforeAttack=true 시 tacticalEval.MoveDestination 전달.
+            UnityEngine.Vector3 casterPos = effectiveCasterPosition ?? situation.Unit.Position;
 
             // AvailableAoEAttacks에서 다른 Phase에서 이미 처리하는 타입 제외
             // ★ v3.9.10: new List<> 제거 → 정적 리스트 재사용
@@ -1077,8 +1124,9 @@ namespace CompanionAI_v3.Planning.Planners
                         continue;
 
                     // ★ v3.9.10: 패턴 1회 계산으로 적+아군 동시 카운트 (GetAffectedNodes 중복 제거)
+                    // ★ v3.117.16: situation.Unit.Position → casterPos (effectiveCasterPosition or current).
                     CombatAPI.CountUnitsInPattern(
-                        ability, enemy.Position, situation.Unit.Position,
+                        ability, enemy.Position, casterPos,
                         situation.Unit, situation.Enemies, situation.Allies,
                         out int enemiesHit, out int alliesHit);
 
@@ -1092,7 +1140,20 @@ namespace CompanionAI_v3.Planning.Planners
                         {
                             if (Main.IsDebugEnabled)
                                 Log.Planning.Debug($"[{roleName}] Unit AoE {ability.Name} -> {enemy.CharacterName}: " +
-                                    $"{alliesHit} allies > max {maxAlliesAllowed} - BLOCKED");
+                                    $"{alliesHit} allies > max {maxAlliesAllowed} - BLOCKED (from {(effectiveCasterPosition.HasValue ? "destination" : "current")})");
+                            continue;
+                        }
+
+                        // ★ v3.117.13/16: 이중 안전망 — IsAoESafeForUnitTargetFromPosition (effective position 기준)
+                        //   사용자 지적: plan 자체가 정확해야 — destination 기준 검사 필수.
+                        //   IsAoESafeForUnitTarget(situation.Unit) 사용 시 caster.Position (이동 전 = stale) 사용 → 잘못된 plan.
+                        //   IsAoESafeForUnitTargetFromPosition(casterPos) 가 effective position 으로 정확 검사.
+                        if (situation.Allies != null
+                            && !AoESafetyChecker.IsAoESafeForUnitTargetFromPosition(ability, casterPos, situation.Unit, enemy, situation.Allies))
+                        {
+                            if (Main.IsDebugEnabled)
+                                Log.Planning.Debug($"[{roleName}] Unit AoE {ability.Name} -> {enemy.CharacterName}: " +
+                                    $"AoESafetyChecker BLOCKED (from {(effectiveCasterPosition.HasValue ? "destination" : "current")})");
                             continue;
                         }
 
@@ -1793,7 +1854,7 @@ namespace CompanionAI_v3.Planning.Planners
         /// <param name="situation">현재 전투 상황</param>
         /// <param name="target">타겟 유닛</param>
         /// <returns>PlannedAction 리스트 (버프 + 공격)</returns>
-        public static List<PlannedAction> PlanKillSequence(Situation situation, BaseUnitEntity target)
+        public static List<PlannedAction> PlanKillSequence(Situation situation, BaseUnitEntity target, UnityEngine.Vector3? effectiveCasterPosition = null)
         {
             var actions = new List<PlannedAction>();
 
@@ -1804,6 +1865,9 @@ namespace CompanionAI_v3.Planning.Planners
             bool useKillSimulator = situation.CharacterSettings?.UseKillSimulator ?? true;
             if (!useKillSimulator)
                 return actions;
+
+            // ★ v3.117.17: effectiveCasterPosition — 이동 후 cast 가 plan 됐을 때 destination 기준 검사
+            UnityEngine.Vector3 casterPos = effectiveCasterPosition ?? situation.Unit.Position;
 
             var sequence = KillSimulator.FindKillSequence(situation, target);
 
@@ -1827,15 +1891,13 @@ namespace CompanionAI_v3.Planning.Planners
                 }
                 else
                 {
-                    // ★ v3.8.54: Kill Sequence 공격의 아군 안전 체크 (CanTargetFriends/사선)
-                    if (CombatAPI.IsPointTargetAbility(ability) || ability.Blueprint?.CanTargetFriends == true)
+                    // ★ v3.117.8 (옵션 B): caller guard 제거 — AoESafetyChecker 가 단일 진실 source.
+                    // ★ v3.117.17: destination-aware (effectiveCasterPosition)
+                    if (!AoESafetyChecker.IsAoESafeForUnitTargetFromPosition(ability, casterPos, situation.Unit, target, situation.Allies))
                     {
-                        if (!AoESafetyChecker.IsAoESafeForUnitTarget(ability, situation.Unit, target, situation.Allies))
-                        {
-                            if (Main.IsDebugEnabled) Log.Planning.Debug($"[AttackPlanner] Kill sequence BLOCKED by ally safety: {ability.Name} -> {target.CharacterName}");
-                            actions.Clear();
-                            return actions;
-                        }
+                        if (Main.IsDebugEnabled) Log.Planning.Debug($"[AttackPlanner] Kill sequence BLOCKED by ally safety: {ability.Name} -> {target.CharacterName} (from {(effectiveCasterPosition.HasValue ? "destination" : "current")})");
+                        actions.Clear();
+                        return actions;
                     }
                     actions.Add(PlannedAction.Attack(ability, target, "Kill sequence attack", apCost));
                 }
@@ -1873,10 +1935,10 @@ namespace CompanionAI_v3.Planning.Planners
                 var sequence = KillSimulator.FindKillSequence(situation, enemy);
                 if (sequence != null && sequence.IsConfirmedKill && sequence.APCost <= situation.CurrentAP)
                 {
-                    // 효율 = 데미지 / AP 비용 (높을수록 좋음)
-                    if (sequence.Efficiency > bestEfficiency)
+                    // ★ v3.117.0 Phase D: ExpectedEfficiency 사용 — 명중률 가중 (낮은 P(kill) 시퀀스 자동 페널티)
+                    if (sequence.ExpectedEfficiency > bestEfficiency)
                     {
-                        bestEfficiency = sequence.Efficiency;
+                        bestEfficiency = sequence.ExpectedEfficiency;
                         bestTarget = enemy;
                     }
                 }

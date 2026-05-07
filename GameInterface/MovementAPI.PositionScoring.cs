@@ -144,7 +144,8 @@ namespace CompanionAI_v3.GameInterface
                                        + AoeHitCountBonus  // ★ v3.116.8 옵션 B: ranged AoE coverage
                                        + PriorityTargetBonus  // ★ v3.116.14 Path C
                                        + LowHPTargetBonus     // ★ v3.116.14 Path C
-                                       + BodyGuardBonus;      // ★ v3.116.14 Path C
+                                       + BodyGuardBonus       // ★ v3.116.14 Path C
+                                       + AllyProtectionBonus; // Phase 4-full
 
             public bool CanStand { get; set; }
             public bool HasLosToEnemy { get; set; }
@@ -166,9 +167,10 @@ namespace CompanionAI_v3.GameInterface
             public float PriorityTargetBonus { get; set; }
 
             /// <summary>
-            /// ★ v3.116.14 (Path C cherry-pick): 게임 EnemyHPLeftScore 포팅 (1/HP → 50/HP).
-            /// 사거리+LOS 도달 가능한 적의 (50 / max(1,HP)) 합. 부상 적 = 킬 기회 가중치.
-            /// HP 200 → 0.25/적, HP 50 → 1/적, HP 10 → 5/적. 5명 부상 sum 시 ~5-25 범위.
+            /// ★ v3.117.0 Phase C: KillOpportunity 보너스 — 의미 변경 (필드명 유지: breakdown 로그 호환).
+            /// 위치 X 에서 적 e 에 대해 hitChance(X) × P(damage ≥ HP | hit) × KILL_OPP_VALUE(30) 누적.
+            /// 기존 (v3.116.14): 50/HP 단순 휴리스틱 — 명중률/데미지 미반영. 사용자 지적 "마무리 가능 계산 안 됨" 직접 해결.
+            /// 5명 100% 마무리 시 max +150. 부상 적 보이지만 명중률 25% 면 자동 페널티.
             /// </summary>
             public float LowHPTargetBonus { get; set; }
 
@@ -178,6 +180,13 @@ namespace CompanionAI_v3.GameInterface
             /// Tank 동료가 보호 대상 옆에서 사격하도록 유도. enemies 와 무관 — 단독 계산.
             /// </summary>
             public float BodyGuardBonus { get; set; }
+
+            /// <summary>
+            /// Phase 4-full: Implicit body-guard. Tank role 한정 — 위협받는 squishy 아군 옆 자리 보너스.
+            /// 게임 native UnitPartBodyGuard 미설정 케이스도 자동 보호. EnemyTargetingMap 활용.
+            /// 비-Tank role 또는 위협받는 squishy 없으면 0.
+            /// </summary>
+            public float AllyProtectionBonus { get; set; }
 
             public override string ToString() =>
                 $"Pos({Position.x:F1},{Position.z:F1}) Score={TotalScore:F1}" +
@@ -190,6 +199,7 @@ namespace CompanionAI_v3.GameInterface
                 (PriorityTargetBonus > 0 ? $" [Prio:+{PriorityTargetBonus:F1}]" : "") +
                 (LowHPTargetBonus > 0 ? $" [LowHP:+{LowHPTargetBonus:F1}]" : "") +
                 (BodyGuardBonus > 0 ? $" [BG:+{BodyGuardBonus:F1}]" : "") +
+                (AllyProtectionBonus > 0 ? $" [Protect:+{AllyProtectionBonus:F1}]" : "") +
                 (AllyClusterPenalty > 0 ? $" [AllyCluster:-{AllyClusterPenalty:F1}]" : "") +
                 (FlankingScore > 0 ? $" [Flank:+{FlankingScore:F1}]" : "") +
                 (ExposureScore > 0 ? $" [Expo:-{ExposureScore:F1}]" : "") +

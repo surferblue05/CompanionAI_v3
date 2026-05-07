@@ -155,6 +155,13 @@ namespace CompanionAI_v3.Analysis
         public float BestNonHittableScore { get; set; }
         public BaseUnitEntity BestNonHittableEnemy { get; set; }
 
+        /// <summary>
+        /// Phase 4 ThreatDifferential — 적이 어떤 아군을 위협하는지 매핑.
+        /// SituationAnalyzer 에서 1회 Compute, ScoreEnemy 가 read-only 활용.
+        /// null 가능 (계산 실패 / 적 없음).
+        /// </summary>
+        public EnemyTargetingMap TargetingMap { get; set; }
+
         #endregion
 
         #region Threat Analysis (v3.1.25)
@@ -462,6 +469,7 @@ namespace CompanionAI_v3.Analysis
             BestHittableScore = float.MinValue;
             BestNonHittableScore = float.MinValue;
             BestNonHittableEnemy = null;
+            TargetingMap = null;  // Phase 4
 
             // Threat Analysis
             AlliesUnderThreat = 0;

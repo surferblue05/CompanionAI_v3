@@ -383,7 +383,9 @@ namespace CompanionAI_v3.Planning
                     weaponRange,
                     situation.MinSafeDistance,
                     rangedExtraMP,  // ★ v3.34.0: MP 버프 예상 회복량 반영
-                    role
+                    role,
+                    null,
+                    situation  // Phase 4-full: AllyProtectionBonus 계산 위해 전달
                 );
             }
 

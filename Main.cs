@@ -113,6 +113,8 @@ namespace CompanionAI_v3
 
                     // ★ v3.0.76: 게임 턴 이벤트 구독
                     TurnEventHandler.Instance.Subscribe();
+                    // ★ v3.117.12: 친선 사격 진단 (게임 native IWarhammerAttackHandler)
+                    Diagnostics.FriendlyFireDetector.Instance.Subscribe();
                 }
                 catch (Exception ex)
                 {
@@ -126,6 +128,8 @@ namespace CompanionAI_v3
                 {
                     // ★ v3.0.76: 게임 턴 이벤트 구독 해제
                     TurnEventHandler.Instance.Unsubscribe();
+                    // ★ v3.117.12: 친선 사격 진단 구독 해제
+                    Diagnostics.FriendlyFireDetector.Instance.Unsubscribe();
 
                     // ★ v3.46.0: DirectiveOverlay 정리
                     DirectiveOverlayUI.Destroy();
