@@ -802,15 +802,8 @@ namespace CompanionAI_v3.Analysis
                 catch { }
             }
 
-            // ★ v3.0.60: 후퇴 위치 계산 - MovementAPI 기반 실제 도달 가능 타일 사용
-            if (situation.IsInDanger && situation.CanMove)
-            {
-                var retreatScore = MovementAPI.FindRetreatPositionSync(
-                    unit,
-                    situation.Enemies,
-                    situation.MinSafeDistance);
-                situation.BetterPositionAvailable = retreatScore != null;
-            }
+            // v3.117.57: BetterPositionAvailable dead flag 제거 — setter only, reader 0 (전체 코드베이스 grep 확인).
+            //   FindRetreatPositionSync 호출은 boolean 산출 외 효과 없었음 → 매 분석 1.5초 절감.
         }
 
         private void AnalyzeAbilities(Situation situation, BaseUnitEntity unit)

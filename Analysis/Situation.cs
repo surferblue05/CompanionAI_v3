@@ -197,9 +197,6 @@ namespace CompanionAI_v3.Analysis
         /// <summary>엄폐 확보 여부</summary>
         public bool HasCover { get; set; }
 
-        /// <summary>더 나은 위치 존재</summary>
-        public bool BetterPositionAvailable { get; set; }
-
         /// <summary>이동 필요 (공격 불가)</summary>
         public bool NeedsReposition { get; set; }
 
@@ -482,7 +479,6 @@ namespace CompanionAI_v3.Analysis
             IsInDamagingAoE = false;
             IsInPsychicNullZone = false;
             HasCover = false;
-            BetterPositionAvailable = false;
             NeedsReposition = false;
             AvgAllyDistanceToNearestEnemy = 0f;
             PredictedMoves = null;

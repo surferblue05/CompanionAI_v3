@@ -325,7 +325,10 @@ namespace CompanionAI_v3.Planning
                     meleeExtraMP,  // ★ v3.34.0: MP 버프 예상 회복량 반영
                     role,
                     null,  // meleeAoEAbility
-                    situation.Enemies
+                    situation.Enemies,
+                    situation.LastMoveOrigin  // v3.117.57: ApplyTacticalStrategy 가 MoveDestination 을 직접 사용 →
+                                              //   v3.74.2 oscillation guard 가 Phase 5.9 경로에서도 적용되도록 통일.
+                                              //   부수 효과: FindMelee whole-result cache 가 MovementPlanner 와 같은 key 로 hit.
                 );
 
                 // FindMeleeAttackPositionSync는 HittableEnemyCount를 설정하지 않음
@@ -384,7 +387,9 @@ namespace CompanionAI_v3.Planning
                     situation.MinSafeDistance,
                     rangedExtraMP,  // ★ v3.34.0: MP 버프 예상 회복량 반영
                     role,
-                    null,
+                    situation.LastMoveOrigin,  // v3.117.57: ApplyTacticalStrategy 가 MoveDestination 을 직접 사용 →
+                                               //   v3.74.2 oscillation guard 가 Phase 5.9 경로에서도 적용되도록 통일.
+                                               //   부수 효과: FindRanged whole-result cache 가 MovementPlanner 와 같은 key 로 hit.
                     situation  // Phase 4-full: AllyProtectionBonus 계산 위해 전달
                 );
             }
