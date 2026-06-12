@@ -301,9 +301,10 @@ namespace CompanionAI_v3.GameInterface
             try
             {
                 // v3.117.63: 게임 업데이트로 GetUnavailabilityReasons() 반환 타입 List → IEnumerable.
-                //   .Count property → .Any() 로 short-circuit (전체 enumerate 회피).
-                var unavailabilityReasons = ability.GetUnavailabilityReasons();
-                if (!unavailabilityReasons.Any()) return false;
+                // v3.117.66: yield-based IEnumerable → .Any() 후 .All() 두 번 enumerate = 비용 2배.
+                //   ToList() 로 1회 materialize. 단일 allocation 비용 << 두 번 enumerate 비용.
+                var unavailabilityReasons = ability.GetUnavailabilityReasons().ToList();
+                if (unavailabilityReasons.Count == 0) return false;
 
                 // 쿨다운만 문제인지 확인
                 bool onlyOnCooldown = unavailabilityReasons.All(r =>

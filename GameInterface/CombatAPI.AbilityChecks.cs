@@ -655,9 +655,11 @@ namespace CompanionAI_v3.GameInterface
 
                 // ★ 핵심: GetUnavailabilityReasons() 사용 - v2.2와 동일
                 // v3.117.63: 게임 업데이트로 반환 타입 List → IEnumerable. .Count property → .Any() 로 전환.
-                var unavailabilityReasons = ability.GetUnavailabilityReasons();
+                // v3.117.66: yield-based IEnumerable → .Any() + 후속 .All() 두 번 enumerate = 비용 2배.
+                //   ToList() 1회 materialize 로 통일.
+                var unavailabilityReasons = ability.GetUnavailabilityReasons().ToList();
 
-                if (unavailabilityReasons.Any())
+                if (unavailabilityReasons.Count > 0)
                 {
                     // ★ v3.1.11: 쿨다운이어도 보너스 사용이 있으면 허용
                     // IsAvailable은 IsBonusUsage를 체크하므로, IsAvailable=true면 보너스 사용 가능
