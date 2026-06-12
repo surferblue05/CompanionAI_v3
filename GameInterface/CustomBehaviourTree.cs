@@ -184,23 +184,17 @@ namespace CompanionAI_v3.GameInterface
         /// ★ v3.7.17: 커스텀 트리인지 확인
         /// 우리 트리는 Loop가 루트, 게임 트리는 Selector가 루트
         /// ★ v3.7.18: 필드 이름 수정 - m_Root → root (게임 코드 확인)
+        /// v3.117.64: 게임 업데이트로 `private root` → `public BehaviourTreeNode Root { get; }` (read-only auto-property).
+        ///   reflection 불필요 — public getter 직접 호출.
         /// </summary>
-        private static readonly FieldInfo _rootNodeField = typeof(BehaviourTree)
-            .GetField("root", BindingFlags.NonPublic | BindingFlags.Instance);
-
         private static bool IsCustomTree(BehaviourTree tree)
         {
             if (tree == null) return false;
 
             try
             {
-                if (_rootNodeField == null)
-                {
-                    Log.Engine.Error("[CustomBehaviourTree] root field not found in BehaviourTree!");
-                    return false;
-                }
-
-                var rootNode = _rootNodeField.GetValue(tree) as BehaviourTreeNode;
+                // v3.117.64: tree.Root public property 직접 사용 (이전 reflection 경로 제거).
+                var rootNode = tree.Root;
                 if (rootNode == null) return false;
 
                 // 우리 커스텀 트리는 Loop가 루트
