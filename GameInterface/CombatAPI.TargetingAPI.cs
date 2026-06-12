@@ -105,6 +105,10 @@ namespace CompanionAI_v3.GameInterface
             }
         }
 
+        // 예측 예외 1회 경고용 — (0,0,0) 반환을 호출자들이 "데미지 0"과 구분하지 못하므로
+        // 게임 업데이트로 예측 API 가 깨지면 AI 전체가 무음 열화됨. 기본 로그 레벨에서 최소 1회 노출.
+        private static bool _damagePredictionFailureWarned;
+
         /// <summary>
         /// ★ v3.0.1: 게임 API를 사용한 정확한 데미지 예측
         /// ability.GetDamagePrediction(target, casterPosition, context) 사용
@@ -129,7 +133,13 @@ namespace CompanionAI_v3.GameInterface
             }
             catch (Exception ex)
             {
-                if (Main.IsDebugEnabled) Log.Engine.Error(ex, $"[CombatAPI] GetDamagePrediction error");
+                if (!_damagePredictionFailureWarned)
+                {
+                    _damagePredictionFailureWarned = true;
+                    Log.Engine.Warn($"[CombatAPI] GetDamagePrediction failed for '{ability?.Name}' — 0 데미지로 처리됨. " +
+                        $"전투 전반에서 반복되면 게임 업데이트로 예측 API 가 깨진 것: {ex.Message} ({ex.GetType().Name})");
+                }
+                else if (Main.IsDebugEnabled) Log.Engine.Error(ex, $"[CombatAPI] GetDamagePrediction error");
                 return (0, 0, 0);
             }
         }
