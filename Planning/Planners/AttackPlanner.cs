@@ -541,8 +541,9 @@ namespace CompanionAI_v3.Planning.Planners
                 }
             }
 
-            // 일반 공격
-            float cost = CombatAPI.GetAbilityAPCost(attack);
+            // 일반 공격 — PlanAttack 과 동일하게 bonus usage(쿨다운+IsAvailable → 0 AP)를 반영.
+            // 원가(GetAbilityAPCost) 사용 시 bonus usage 공격 비용을 과대 예측해 계획 누락/장부 드리프트.
+            float cost = CombatAPI.GetEffectiveAPCost(attack);
             if (cost > remainingAP) return null;
 
             remainingAP -= cost;
