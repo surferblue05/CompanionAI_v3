@@ -347,11 +347,21 @@ namespace CompanionAI_v3.MachineSpirit
                 // ★ Streaming: add empty placeholder, update it token by token
                 _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time });
                 int responseIdx = _chatHistory.Count - 1;
+                float responseTs = _chatHistory[responseIdx].Timestamp;
+
+                // 스트리밍 도중 히스토리가 Clear/변형될 수 있음 (성격·모델 전환, 수동 클리어 —
+                // LLMClient.Reset()은 진행 중인 코루틴을 멈추지 않음). stale index 로 접근하면
+                // ArgumentOutOfRange 또는 엉뚱한 메시지 오염 → index+timestamp 일치할 때만 갱신.
+                bool PlaceholderAlive() =>
+                    responseIdx < _chatHistory.Count
+                    && !_chatHistory[responseIdx].IsUser
+                    && _chatHistory[responseIdx].Timestamp == responseTs;
 
                 CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
                     Config, messages,
                     onToken: tokens =>
                     {
+                        if (!PlaceholderAlive()) return;
                         var msg = _chatHistory[responseIdx];
                         msg.Text += tokens;
                         _chatHistory[responseIdx] = msg;
@@ -359,7 +369,7 @@ namespace CompanionAI_v3.MachineSpirit
                     },
                     onComplete: () =>
                     {
-                        if (responseIdx < _chatHistory.Count)
+                        if (PlaceholderAlive())
                         {
                             var msg = _chatHistory[responseIdx];
                             // ★ v3.74.0: Strip narration patterns from RP models
@@ -374,7 +384,7 @@ namespace CompanionAI_v3.MachineSpirit
                     },
                     onError: error =>
                     {
-                        if (responseIdx < _chatHistory.Count)
+                        if (PlaceholderAlive())
                         {
                             var msg = _chatHistory[responseIdx];
                             if (string.IsNullOrEmpty(msg.Text?.Trim()))
