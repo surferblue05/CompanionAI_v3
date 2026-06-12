@@ -300,16 +300,21 @@ namespace CompanionAI_v3.GameInterface
             if (ability == null) return false;
             try
             {
-                // v3.117.63: 게임 업데이트로 GetUnavailabilityReasons() 반환 타입 List → IEnumerable.
-                // v3.117.66: yield-based IEnumerable → .Any() 후 .All() 두 번 enumerate = 비용 2배.
-                //   ToList() 로 1회 materialize. 단일 allocation 비용 << 두 번 enumerate 비용.
-                var unavailabilityReasons = ability.GetUnavailabilityReasons().ToList();
-                if (unavailabilityReasons.Count == 0) return false;
-
-                // 쿨다운만 문제인지 확인
-                bool onlyOnCooldown = unavailabilityReasons.All(r =>
-                    r == AbilityData.UnavailabilityReasonType.IsOnCooldown ||
-                    r == AbilityData.UnavailabilityReasonType.IsOnCooldownUntilEndOfCombat);
+                // GetUnavailabilityReasons() 는 yield 기반 — 단일 pass 로 "이유 존재"와 "쿨다운만인지"를
+                // 동시에 판정 (빈 경우가 대부분인 planning hot path 에서 무할당, enumerate 1회).
+                bool hasAnyReason = false;
+                bool onlyOnCooldown = true;
+                foreach (var r in ability.GetUnavailabilityReasons())
+                {
+                    hasAnyReason = true;
+                    if (r != AbilityData.UnavailabilityReasonType.IsOnCooldown &&
+                        r != AbilityData.UnavailabilityReasonType.IsOnCooldownUntilEndOfCombat)
+                    {
+                        onlyOnCooldown = false;
+                        break;
+                    }
+                }
+                if (!hasAnyReason) return false;
 
                 // 쿨다운이지만 IsAvailable=true면 bonus usage 있음
                 return onlyOnCooldown && ability.IsAvailable;

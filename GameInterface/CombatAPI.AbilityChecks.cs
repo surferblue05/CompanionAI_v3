@@ -654,19 +654,28 @@ namespace CompanionAI_v3.GameInterface
                 }
 
                 // ★ 핵심: GetUnavailabilityReasons() 사용 - v2.2와 동일
-                // v3.117.63: 게임 업데이트로 반환 타입 List → IEnumerable. .Count property → .Any() 로 전환.
-                // v3.117.66: yield-based IEnumerable → .Any() + 후속 .All() 두 번 enumerate = 비용 2배.
-                //   ToList() 1회 materialize 로 통일.
-                var unavailabilityReasons = ability.GetUnavailabilityReasons().ToList();
+                // yield 기반 IEnumerable — 단일 pass 로 모든 판정 플래그를 동시에 계산.
+                // 빈 경우(능력 사용 가능 = 대부분)는 무할당; 이유가 있을 때만 list materialize.
+                bool onlyOnCooldown = true;
+                bool onlyUltimateRoundLimit = true;
+                List<AbilityData.UnavailabilityReasonType> unavailabilityReasons = null;
+                foreach (var r in ability.GetUnavailabilityReasons())
+                {
+                    if (unavailabilityReasons == null)
+                        unavailabilityReasons = new List<AbilityData.UnavailabilityReasonType>(4);
+                    unavailabilityReasons.Add(r);
 
-                if (unavailabilityReasons.Count > 0)
+                    if (r != AbilityData.UnavailabilityReasonType.IsOnCooldown &&
+                        r != AbilityData.UnavailabilityReasonType.IsOnCooldownUntilEndOfCombat)
+                        onlyOnCooldown = false;
+                    if (r != AbilityData.UnavailabilityReasonType.IsUltimateAbilityUsedThisRound)
+                        onlyUltimateRoundLimit = false;
+                }
+
+                if (unavailabilityReasons != null)
                 {
                     // ★ v3.1.11: 쿨다운이어도 보너스 사용이 있으면 허용
                     // IsAvailable은 IsBonusUsage를 체크하므로, IsAvailable=true면 보너스 사용 가능
-                    bool onlyOnCooldown = unavailabilityReasons.All(r =>
-                        r == AbilityData.UnavailabilityReasonType.IsOnCooldown ||
-                        r == AbilityData.UnavailabilityReasonType.IsOnCooldownUntilEndOfCombat);
-
                     if (onlyOnCooldown && ability.IsAvailable)
                     {
                         // 쿨다운이지만 보너스 사용 가능 (런 앤 건 등)
@@ -676,9 +685,6 @@ namespace CompanionAI_v3.GameInterface
 
                     // ★ v3.8.37: WarhammerFreeUltimateBuff가 있으면 IsUltimateAbilityUsedThisRound 무시
                     // 잠재력 초월(SoulMarkHope4) 버프는 궁극기 라운드 제한을 우회해야 함
-                    bool onlyUltimateRoundLimit = unavailabilityReasons.All(r =>
-                        r == AbilityData.UnavailabilityReasonType.IsUltimateAbilityUsedThisRound);
-
                     if (onlyUltimateRoundLimit)
                     {
                         var caster = ability.Caster;
@@ -689,7 +695,8 @@ namespace CompanionAI_v3.GameInterface
                         }
                     }
 
-                    reasons = unavailabilityReasons.Select(r => r.ToString()).ToList();
+                    foreach (var r in unavailabilityReasons)
+                        reasons.Add(r.ToString());
                     return false;
                 }
 
