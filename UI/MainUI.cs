@@ -241,7 +241,9 @@ namespace CompanionAI_v3.UI
                 iv = DrawSliderSettingIntLarge(L("MaxPlayerAlliesHit"), L("MaxPlayerAlliesHitDesc"), aoeConfig.MaxPlayerAlliesHit, 0, 3);
                 if (iv != aoeConfig.MaxPlayerAlliesHit) { aoeConfig.MaxPlayerAlliesHit = iv; aoeChanged = true; }
 
-                iv = DrawSliderSettingIntLarge(L("CfgMinClusterSize"), L("CfgMinClusterSizeDesc"), aoeConfig.MinClusterSize, 1, 5);
+                // 최소값 2 — ClusterDetector.MIN_CLUSTER_SIZE 가 Math.Max(2, 설정값)로 clamp 하므로
+                // 1 은 효과가 없음 (단일 적 AoE 는 낭비라 의도적 미지원). UI 를 실제 동작과 일치시킴.
+                iv = DrawSliderSettingIntLarge(L("CfgMinClusterSize"), L("CfgMinClusterSizeDesc"), aoeConfig.MinClusterSize, 2, 5);
                 if (iv != aoeConfig.MinClusterSize) { aoeConfig.MinClusterSize = iv; aoeChanged = true; }
 
                 if (aoeChanged) AIConfig.Save();

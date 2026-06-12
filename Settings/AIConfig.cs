@@ -8,7 +8,7 @@ namespace CompanionAI_v3.Settings
     /// <summary>
     /// ★ v3.20.0: 사용자 노출 AOE 설정
     /// - MaxPlayerAlliesHit : 아군 최대 피격 허용 수 (0=아군 피격 완전 차단)
-    /// - MinClusterSize     : AoE 클러스터 최소 적 수 (1=단일 적도 AoE 허용)
+    /// - MinClusterSize     : AoE 클러스터 최소 적 수 (최소 2 — ClusterDetector 가 clamp)
     /// - SelfAoeMinAdjacentEnemies : Self-AoE 최소 인접 적 수
     ///
     /// 내부 AoE 가중치(EnemyHitScore, PenaltyMultiplier 등)는 SC.cs 참조

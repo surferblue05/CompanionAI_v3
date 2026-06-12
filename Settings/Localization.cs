@@ -1052,11 +1052,11 @@ namespace CompanionAI_v3.Settings
                 { Language.Chinese, "最小集群大小" }
             },
             ["CfgMinClusterSizeDesc"] = new() {
-                { Language.English, "Min enemies in a group for AoE targeting.\n1 = single enemies are valid AoE targets" },
-                { Language.Korean, "AoE 타겟팅 유효 클러스터 최소 적 수.\n1이면 단일 적도 AoE 대상" },
-                { Language.Russian, "Мин. врагов в группе для наведения AOE.\n1 = даже одиночные враги — цели AOE" },
-                { Language.Japanese, "AoEターゲティング有効クラスター最小敵数。\n1=単体敵もAoE対象" },
-                { Language.Chinese, "AoE瞄准有效集群的最少敌人数。\n1=单个敌人也是有效AoE目标" }
+                { Language.English, "Min enemies in a group for AoE targeting.\nMinimum 2 — single-enemy AoE is not supported" },
+                { Language.Korean, "AoE 타겟팅 유효 클러스터 최소 적 수.\n최소 2 — 단일 적 AoE는 지원하지 않음" },
+                { Language.Russian, "Мин. врагов в группе для наведения AOE.\nМинимум 2 — AOE по одиночной цели не поддерживается" },
+                { Language.Japanese, "AoEターゲティング有効クラスター最小敵数。\n最小2 — 単体敵へのAoEは非対応" },
+                { Language.Chinese, "AoE瞄准有效集群的最少敌人数。\n最小为2 — 不支持对单个敌人使用AoE" }
             },
             ["ClusterNpcAllyPenalty"] = new() {
                 { Language.English, "Cluster NPC Ally Penalty" },
