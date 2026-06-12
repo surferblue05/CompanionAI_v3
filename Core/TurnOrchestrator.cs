@@ -315,6 +315,9 @@ namespace CompanionAI_v3.Core
             if (turnState.Plan.NeedsReplan(situation))
             {
                 CaptureStrategicContextOnReplan(turnState);
+                // 교체 전 미실행 액션의 heal/taunt 예약 해제 — 해제 없이 덮어쓰면 라운드 끝까지
+                // stale 예약이 남아 다른 유닛의 치유/도발 계획을 차단함
+                turnState.Plan.Cancel("Replan - situation change");
                 Log.Engine.Info($"[Orchestrator] {unitName}: Replanning due to situation change");
                 turnState.Plan = _planner.CreatePlan(situation, turnState);
                 Data.CompanionDialogue.AnnouncePlan(unit, turnState.Plan);  // ★ v3.9.32: AI Speech (replan)
@@ -396,6 +399,8 @@ namespace CompanionAI_v3.Core
                 if (turnState.Plan.NeedsReplan(situation))
                 {
                     CaptureStrategicContextOnReplan(turnState);
+                    // 교체 전 미실행 액션의 heal/taunt 예약 해제 (일반 경로와 동일)
+                    turnState.Plan.Cancel("Replan - situation change (LLM Judge)");
                     Log.Engine.Info($"[LLM Judge] {unitName}: Replanning due to situation change");
                     turnState.Plan = _planner.CreatePlan(situation, turnState);
                     Data.CompanionDialogue.AnnouncePlan(unit, turnState.Plan);
