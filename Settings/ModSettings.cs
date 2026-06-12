@@ -178,14 +178,6 @@ namespace CompanionAI_v3.Settings
                     return;
                 }
 
-                // v3.117.65: 같은 폴더에 .corrupted-* 백업이 이미 존재하면 손상 marker 영구화 — 사용자가
-                //   수동 복구 또는 백업 파일 삭제하기 전까지 Save 차단 유지. static flag 휘발 문제 방어.
-                if (File.Exists(filePath) && PersistenceUtils.HasCorruptedBackup(filePath))
-                {
-                    _failedGameIds.Add(gameId);
-                    Log.Persistence.Warn($"[PerSaveSettings] Existing .corrupted-* backup detected for {Path.GetFileName(filePath)} — Save remains blocked until user recovers manually.");
-                }
-
                 if (File.Exists(filePath))
                 {
                     var json = File.ReadAllText(filePath);
@@ -197,18 +189,16 @@ namespace CompanionAI_v3.Settings
                         _failedGameIds.Add(gameId);
                         _cached = new PerSaveSettings();
                     }
-                    else if (!_failedGameIds.Contains(gameId))
-                    {
-                        // 정상 로드 + 손상 marker 없음 → flag clean. (.corrupted-* 가 남아있으면 위에서 추가됨)
-                        Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId})");
-                    }
                     else
                     {
-                        Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId}) — Save blocked (corruption backup exists)");
+                        // 정상 로드 → 이번 세션 실패 기록 해제 (디스크 .corrupted-* marker 는 Save 가 직접 검사)
+                        _failedGameIds.Remove(gameId);
+                        Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId})");
                     }
                 }
                 else
                 {
+                    _failedGameIds.Remove(gameId);
                     Log.Persistence.Info($"[PerSaveSettings] No settings file for GameId={gameId}, creating new");
                     _cached = new PerSaveSettings();
                 }
@@ -248,6 +238,14 @@ namespace CompanionAI_v3.Settings
                 if (string.IsNullOrEmpty(filePath))
                 {
                     Log.Persistence.Debug("[PerSaveSettings] Cannot save - mod path not set");
+                    return;
+                }
+
+                // 디스크 .corrupted-* marker 존재 시 Save 차단 — static flag 와 달리 mod 재로드에도 영속,
+                // 사용자가 복구 후 백업 삭제하면 즉시 해제.
+                if (PersistenceUtils.HasCorruptedBackup(filePath))
+                {
+                    Log.Persistence.Warn($"[PerSaveSettings] Save blocked — {Path.GetFileName(filePath)}.corrupted-* 백업 존재. 복구 확인 후 백업 삭제 시 저장 재개.");
                     return;
                 }
 
@@ -445,13 +443,6 @@ namespace CompanionAI_v3.Settings
             {
                 string path = GetSettingsPath();
 
-                // v3.117.65: 같은 폴더에 .corrupted-* 가 이미 존재하면 손상 marker 영구화.
-                if (File.Exists(path) && PersistenceUtils.HasCorruptedBackup(path))
-                {
-                    _loadFailed = true;
-                    Log.Persistence.Warn("Existing settings.json.corrupted-* backup detected — Save remains blocked until user recovers manually.");
-                }
-
                 if (File.Exists(path))
                 {
                     string json = File.ReadAllText(path);
@@ -459,9 +450,8 @@ namespace CompanionAI_v3.Settings
                     if (settings != null)
                     {
                         Instance = settings;
-                        // 정상 로드 — 단 .corrupted-* 가 남아있으면 _loadFailed 는 위에서 set 된 상태 유지.
-                        if (!_loadFailed) Log.Persistence.Info("Settings loaded successfully");
-                        else Log.Persistence.Info("Settings loaded — Save blocked (corruption backup exists)");
+                        _loadFailed = false;
+                        Log.Persistence.Info("Settings loaded successfully");
                     }
                     else
                     {
@@ -505,10 +495,11 @@ namespace CompanionAI_v3.Settings
         {
             if (Instance == null || _modEntry == null) return;
 
-            // v3.117.60: Load 실패 후 미해결 상태에서는 Save 차단 — 빈 설정이 원본 덮어쓰는 것 방지.
-            if (_loadFailed)
+            // 이번 세션 load 실패 또는 디스크 .corrupted-* marker 존재 시 Save 차단 — 빈 설정이
+            // 원본을 덮어쓰는 것 방지. marker 는 mod 재로드에도 영속, 백업 삭제 시 즉시 해제.
+            if (_loadFailed || PersistenceUtils.HasCorruptedBackup(GetSettingsPath()))
             {
-                Log.Persistence.Warn("settings.json Save blocked — load 실패 후 미해결. .corrupted-* 백업 확인 후 수동 복구 필요.");
+                Log.Persistence.Warn("settings.json Save blocked — corruption 미해결. 복구 확인 후 settings.json.corrupted-* 백업 삭제 시 저장 재개.");
                 return;
             }
 

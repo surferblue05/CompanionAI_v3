@@ -77,13 +77,6 @@ namespace CompanionAI_v3.Settings
             string configPath = Path.Combine(modPath, "aiconfig.json");
             bool fileExisted = File.Exists(configPath);
 
-            // v3.117.65: 같은 폴더에 .corrupted-* 가 이미 존재하면 손상 marker 영구화.
-            if (fileExisted && PersistenceUtils.HasCorruptedBackup(configPath))
-            {
-                _loadFailed = true;
-                Log.Persistence.Warn("[AIConfig] Existing aiconfig.json.corrupted-* backup detected — Save remains blocked until user recovers manually.");
-            }
-
             try
             {
                 if (fileExisted)
@@ -94,14 +87,13 @@ namespace CompanionAI_v3.Settings
                     if (config != null)
                     {
                         Instance = config;
-                        // 정상 로드 — 단 .corrupted-* 가 남아있으면 _loadFailed 는 위에서 set 된 상태 유지.
+                        _loadFailed = false;
 
                         // null 보호 (구버전 JSON 호환 또는 필드 누락 시)
                         if (Instance.AoE == null) Instance.AoE = new AoEConfig();
                         if (Instance.WeaponRotation == null) Instance.WeaponRotation = new WeaponRotationConfig();
 
-                        if (!_loadFailed) Log.Persistence.Info($"[AIConfig] Loaded from {configPath}");
-                        else Log.Persistence.Info($"[AIConfig] Loaded from {configPath} — Save blocked (corruption backup exists)");
+                        Log.Persistence.Info($"[AIConfig] Loaded from {configPath}");
                         return;
                     }
                     // v3.117.60: deserialize 결과 null → corruption 처리.
@@ -136,14 +128,15 @@ namespace CompanionAI_v3.Settings
                 return;
             }
 
-            // v3.117.60: Load 실패 후 미해결 상태에서는 Save 차단.
-            if (_loadFailed)
+            string configPath = Path.Combine(_modPath, "aiconfig.json");
+
+            // 이번 세션 load 실패 또는 디스크 .corrupted-* marker 존재 시 Save 차단 — 빈/기본 설정이
+            // 사용자 원본을 덮어쓰는 것 방지. marker 는 mod 재로드에도 영속, 백업 삭제 시 즉시 해제.
+            if (_loadFailed || PersistenceUtils.HasCorruptedBackup(configPath))
             {
-                Log.Persistence.Warn("[AIConfig] Save blocked — load 실패 후 미해결. .corrupted-* 백업 확인 후 수동 복구 필요.");
+                Log.Persistence.Warn("[AIConfig] Save blocked — corruption 미해결. 복구 확인 후 aiconfig.json.corrupted-* 백업 삭제 시 저장 재개.");
                 return;
             }
-
-            string configPath = Path.Combine(_modPath, "aiconfig.json");
 
             try
             {
