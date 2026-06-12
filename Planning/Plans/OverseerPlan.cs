@@ -763,6 +763,11 @@ namespace CompanionAI_v3.Planning.Plans
             // DPSPlan Phase 4.3b/4.4에 해당 — 오버시어도 마스터 AoE 활용
             // ══════════════════════════════════════════════════════════════
             bool didPlanAoE = false;
+            var plannedTargetIds = new HashSet<string>();
+            // ★ v3.8.57: 키스톤에서 사용된 능력 GUID를 Phase 5에 전달 → 이중 계획 방지
+            // (Warp Relay로 계획된 사이킥 공격이 직접 공격으로 또 계획되는 것 방지)
+            // AoE phase 앞에서 선언 — Phase 4.96~4.97 AoE GUID 도 등록해 같은 턴 중복 시전 방지
+            var plannedAbilityGuids = new HashSet<string>(usedKeystoneAbilityGuids);
 
             // Phase 4.96: Melee AoE (근접 오버시어만)
             if (!situation.PrefersRanged && remainingAP >= 1f)
@@ -772,6 +777,7 @@ namespace CompanionAI_v3.Planning.Plans
                 {
                     actions.Add(meleeAoE);
                     didPlanAoE = true;
+                    ExcludePlannedAbilityGuid(meleeAoE, situation, plannedAbilityGuids);
                     Log.Planning.Info($"[Overseer] Phase 4.96: Melee AoE planned");
                 }
             }
@@ -793,6 +799,7 @@ namespace CompanionAI_v3.Planning.Plans
                 {
                     actions.Add(aoE);
                     didPlanAoE = true;
+                    ExcludePlannedAbilityGuid(aoE, situation, plannedAbilityGuids);
                     Log.Planning.Info($"[Overseer] Phase 4.97: Point-target AoE planned{(effPos.HasValue ? " (from destination)" : "")}");
                 }
                 if (!didPlanAoE)
@@ -802,6 +809,7 @@ namespace CompanionAI_v3.Planning.Plans
                     {
                         actions.Add(unitAoE);
                         didPlanAoE = true;
+                        ExcludePlannedAbilityGuid(unitAoE, situation, plannedAbilityGuids);
                         Log.Planning.Info($"[Overseer] Phase 4.97b: Unit-targeted AoE planned{(effPos.HasValue ? " (from destination)" : "")}");
                     }
                 }
@@ -817,10 +825,6 @@ namespace CompanionAI_v3.Planning.Plans
             // ★ v3.9.28: 이동이 이미 계획됨 → AttackPlanner에 pending move 알림
             if (CollectionHelper.Any(actions, a => a.Type == ActionType.Move))
                 attackContext.HasPendingMove = true;
-            var plannedTargetIds = new HashSet<string>();
-            // ★ v3.8.57: 키스톤에서 사용된 능력 GUID를 Phase 5에 전달 → 이중 계획 방지
-            // (Warp Relay로 계획된 사이킥 공격이 직접 공격으로 또 계획되는 것 방지)
-            var plannedAbilityGuids = new HashSet<string>(usedKeystoneAbilityGuids);
             int attacksPlanned = 0;
 
             // ★ v3.19.2: APBudget.CanAfford()로 강제 — TurnEnding + Strategy 예약을 중앙 검증

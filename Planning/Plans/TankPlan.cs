@@ -319,6 +319,9 @@ namespace CompanionAI_v3.Planning.Plans
             // ★ v3.9.28: 이동이 이미 계획됨 → AttackPlanner에 pending move 알림
             if (CollectionHelper.Any(actions, a => a.Type == ActionType.Move))
                 attackContext.HasPendingMove = true;
+            // Phase 4.8 AoE 능력을 Phase 5 제외 목록에 등록하기 위해 AoE phase 앞에서 선언
+            var plannedTargetIds = new HashSet<string>();
+            var plannedAbilityGuids = new HashSet<string>();
 
             // ★ v3.8.50: Phase 4.8a: Self-Targeted AOE (BladeDance 등)
             var selfAoEAction = PlanSelfTargetedAoE(situation, ref remainingAP);
@@ -326,6 +329,7 @@ namespace CompanionAI_v3.Planning.Plans
             {
                 actions.Add(selfAoEAction);
                 didPlanAttack = true;
+                ExcludePlannedAbilityGuid(selfAoEAction, situation, plannedAbilityGuids);
                 Log.Planning.Info($"[Tank] Phase 4.8a: Self-Targeted AOE planned");
             }
 
@@ -338,6 +342,7 @@ namespace CompanionAI_v3.Planning.Plans
                 {
                     actions.Add(meleeAoEAction);
                     didPlanAttack = true;
+                    ExcludePlannedAbilityGuid(meleeAoEAction, situation, plannedAbilityGuids);
                     Log.Planning.Info($"[Tank] Phase 4.8b: Melee AOE planned");
                 }
             }
@@ -390,6 +395,7 @@ namespace CompanionAI_v3.Planning.Plans
                     {
                         actions.Add(aoE);
                         didPlanAttack = true;
+                        ExcludePlannedAbilityGuid(aoE, situation, plannedAbilityGuids);
                         Log.Planning.Info($"[Tank] Phase 4.8c: Point-target AOE planned");
                     }
 
@@ -401,6 +407,7 @@ namespace CompanionAI_v3.Planning.Plans
                         {
                             actions.Add(unitAoE);
                             didPlanAttack = true;
+                            ExcludePlannedAbilityGuid(unitAoE, situation, plannedAbilityGuids);
                             Log.Planning.Info($"[Tank] Phase 4.8c: Unit-targeted AOE planned");
                         }
                     }
@@ -418,6 +425,7 @@ namespace CompanionAI_v3.Planning.Plans
                     actions.Add(aoEMoveAction);
                     actions.Add(aoEAttackAction);
                     didPlanAttack = true;
+                    ExcludePlannedAbilityGuid(aoEAttackAction, situation, plannedAbilityGuids);
 
                     var moveDest = aoEMoveAction.MoveDestination ?? aoEMoveAction.Target?.Point;
                     if (moveDest.HasValue)
@@ -493,8 +501,6 @@ namespace CompanionAI_v3.Planning.Plans
 
             // Phase 5: 공격 - ★ v3.1.21: Tank 가중치로 최적 타겟 선택
             int attacksPlanned = 0;
-            var plannedTargetIds = new HashSet<string>();
-            var plannedAbilityGuids = new HashSet<string>();
 
             // ★ v3.19.2: APBudget.CanAfford()로 강제 — TurnEnding + Strategy 예약을 중앙 검증
             while (budget.CanAfford(0, remainingAP) && situation.HasHittableEnemies && attacksPlanned < MAX_ATTACKS_PER_PLAN)

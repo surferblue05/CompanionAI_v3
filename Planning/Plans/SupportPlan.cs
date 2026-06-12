@@ -240,6 +240,9 @@ namespace CompanionAI_v3.Planning.Plans
             // ★ v3.9.28: 이동이 이미 계획됨 → AttackPlanner에 pending move 알림
             if (CollectionHelper.Any(actions, a => a.Type == ActionType.Move))
                 attackContext.HasPendingMove = true;
+            // Phase 5.5 AoE 능력을 Phase 6 제외 목록에 등록하기 위해 AoE phase 앞에서 선언
+            var plannedTargetIds = new HashSet<string>();
+            var plannedAbilityGuids = new HashSet<string>();
             if (situation.HasLivingEnemies && situation.HasAoEAttacks)
             {
                 bool useAoEOptimization = situation.CharacterSettings?.UseAoEOptimization ?? true;
@@ -285,6 +288,7 @@ namespace CompanionAI_v3.Planning.Plans
                     {
                         actions.Add(aoE);
                         didPlanAttack = true;
+                        ExcludePlannedAbilityGuid(aoE, situation, plannedAbilityGuids);
                         Log.Planning.Info($"[Support] Phase 5.5: Point-target AOE planned");
                     }
 
@@ -296,6 +300,7 @@ namespace CompanionAI_v3.Planning.Plans
                         {
                             actions.Add(unitAoE);
                             didPlanAttack = true;
+                            ExcludePlannedAbilityGuid(unitAoE, situation, plannedAbilityGuids);
                             Log.Planning.Info($"[Support] Phase 5.5b: Unit-targeted AOE planned");
                         }
                     }
@@ -313,6 +318,7 @@ namespace CompanionAI_v3.Planning.Plans
                     actions.Add(aoEMoveAction);
                     actions.Add(aoEAttackAction);
                     didPlanAttack = true;
+                    ExcludePlannedAbilityGuid(aoEAttackAction, situation, plannedAbilityGuids);
 
                     var moveDest = aoEMoveAction.MoveDestination ?? aoEMoveAction.Target?.Point;
                     if (moveDest.HasValue)
@@ -374,8 +380,6 @@ namespace CompanionAI_v3.Planning.Plans
             // 기존 SequenceOptimizer 제거 → PlanSafeRangedAttack 직접 사용
             // ClearMP 안전/후퇴 판단은 UtilityScorer + Phase 5.8이 담당
             int attacksPlanned = 0;
-            var plannedTargetIds = new HashSet<string>();
-            var plannedAbilityGuids = new HashSet<string>();
 
             // ★ v3.19.2: APBudget.CanAfford()로 강제 — TurnEnding + Strategy 예약을 중앙 검증
             while (budget.CanAfford(0, remainingAP) && situation.HasHittableEnemies && attacksPlanned < MAX_ATTACKS_PER_PLAN)

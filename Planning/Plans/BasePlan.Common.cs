@@ -17,6 +17,19 @@ namespace CompanionAI_v3.Planning.Plans
         #region Common Methods (not delegated)
 
         /// <summary>
+        /// AoE phase 에서 계획된 능력의 GUID 를 공격 제외 목록에 등록 — Phase 5 공격 루프가
+        /// 같은 턴에 동일 AoE 를 다시 선택하는 중복 시전 방지.
+        /// 단일 hittable 적일 때는 동일 능력 재공격 허용 정책(Phase 5 루프와 동일 기준)에 따라 등록하지 않음.
+        /// </summary>
+        protected static void ExcludePlannedAbilityGuid(PlannedAction action, Situation situation, HashSet<string> excludeAbilityGuids)
+        {
+            if (action?.Ability == null || excludeAbilityGuids == null) return;
+            if (situation.HittableEnemies.Count <= 1) return;
+            string guid = action.Ability.Blueprint?.AssetGuid?.ToString();
+            if (!string.IsNullOrEmpty(guid)) excludeAbilityGuids.Add(guid);
+        }
+
+        /// <summary>
         /// ★ v3.1.24: 최종 AP 활용 (모든 주요 행동 실패 후)
         /// Phase 9에서 사용 - 공격/이동 모두 실패했지만 AP가 남았을 때
         /// </summary>

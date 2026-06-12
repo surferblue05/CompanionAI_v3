@@ -510,6 +510,7 @@ namespace CompanionAI_v3.Planning.Plans
                 {
                     actions.Add(meleeAoEAction);
                     didPlanAttack = true;
+                    ExcludePlannedAbilityGuid(meleeAoEAction, situation, plannedAbilityGuids);
                     Log.Planning.Info($"[DPS] Phase 4.3b: Melee AOE planned");
                 }
             }
@@ -570,6 +571,7 @@ namespace CompanionAI_v3.Planning.Plans
                     {
                         actions.Add(aoE);
                         didPlanAttack = true;
+                        ExcludePlannedAbilityGuid(aoE, situation, plannedAbilityGuids);
                         Log.Planning.Info($"[DPS] Phase 4.4: Point-target AOE planned{(effPos.HasValue ? " (from destination)" : "")}");
                     }
 
@@ -581,6 +583,7 @@ namespace CompanionAI_v3.Planning.Plans
                         {
                             actions.Add(unitAoE);
                             didPlanAttack = true;
+                            ExcludePlannedAbilityGuid(unitAoE, situation, plannedAbilityGuids);
                             Log.Planning.Info($"[DPS] Phase 4.4b: Unit-targeted AOE planned{(effPos.HasValue ? " (from destination)" : "")}");
                         }
                     }
@@ -599,6 +602,7 @@ namespace CompanionAI_v3.Planning.Plans
                     actions.Add(aoEMoveAction);
                     actions.Add(aoEAttackAction);
                     didPlanAttack = true;
+                    ExcludePlannedAbilityGuid(aoEAttackAction, situation, plannedAbilityGuids);
 
                     var moveDest = aoEMoveAction.MoveDestination ?? aoEMoveAction.Target?.Point;
                     if (moveDest.HasValue)
