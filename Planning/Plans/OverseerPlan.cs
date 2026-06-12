@@ -326,7 +326,14 @@ namespace CompanionAI_v3.Planning.Plans
                 // ────────────────────────────────────────────────────────────
                 if (!preRelocateKeystoneDone)
                 {
-                    var keystoneActions = PlanAllFamiliarKeystoneBuffs(situation, ref remainingAP, heroicActPlanned);
+                    // 재배치(3.3)가 계획됐으면 실행 시점에 패밀리어는 optimalPos(기본 검사 위치)에 있음.
+                    // 재배치가 없으면 optimalPos 는 실제로 가지 않는 분석 시점 후보 위치 — 현재 위치로 검사해야
+                    // 아군 범위 판정이 어긋나지 않음.
+                    UnityEngine.Vector3? keystoneCheckPos = (familiarRelocate == null && situation.Familiar != null)
+                        ? (UnityEngine.Vector3?)situation.Familiar.Position
+                        : null;
+                    var keystoneActions = PlanAllFamiliarKeystoneBuffs(situation, ref remainingAP, heroicActPlanned,
+                        overrideCheckPosition: keystoneCheckPos);
                     if (keystoneActions.Count > 0)
                     {
                         // ★ v3.8.86: Raven + HeroicAct → WarpRelay 콤보 그룹 태깅
