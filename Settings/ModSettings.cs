@@ -178,6 +178,14 @@ namespace CompanionAI_v3.Settings
                     return;
                 }
 
+                // v3.117.65: 같은 폴더에 .corrupted-* 백업이 이미 존재하면 손상 marker 영구화 — 사용자가
+                //   수동 복구 또는 백업 파일 삭제하기 전까지 Save 차단 유지. static flag 휘발 문제 방어.
+                if (File.Exists(filePath) && PersistenceUtils.HasCorruptedBackup(filePath))
+                {
+                    _failedGameIds.Add(gameId);
+                    Log.Persistence.Warn($"[PerSaveSettings] Existing .corrupted-* backup detected for {Path.GetFileName(filePath)} — Save remains blocked until user recovers manually.");
+                }
+
                 if (File.Exists(filePath))
                 {
                     var json = File.ReadAllText(filePath);
@@ -185,20 +193,22 @@ namespace CompanionAI_v3.Settings
                     if (_cached == null)
                     {
                         // 파일은 존재하지만 deserialize 결과가 null (빈 파일, "null" 리터럴 등) → corruption 으로 취급.
-                        BackupCorruptedFile(filePath, "deserialize returned null");
+                        PersistenceUtils.BackupCorruptedFile(filePath, "[PerSaveSettings]", "deserialize returned null");
                         _failedGameIds.Add(gameId);
                         _cached = new PerSaveSettings();
                     }
+                    else if (!_failedGameIds.Contains(gameId))
+                    {
+                        // 정상 로드 + 손상 marker 없음 → flag clean. (.corrupted-* 가 남아있으면 위에서 추가됨)
+                        Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId})");
+                    }
                     else
                     {
-                        // 정상 로드 → 이전 실패 기록 제거 (사용자가 손상 파일 수동 복구한 케이스)
-                        _failedGameIds.Remove(gameId);
-                        Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId})");
+                        Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId}) — Save blocked (corruption backup exists)");
                     }
                 }
                 else
                 {
-                    _failedGameIds.Remove(gameId);
                     Log.Persistence.Info($"[PerSaveSettings] No settings file for GameId={gameId}, creating new");
                     _cached = new PerSaveSettings();
                 }
@@ -206,28 +216,11 @@ namespace CompanionAI_v3.Settings
             catch (Exception ex)
             {
                 // v3.117.60: 손상된 파일 백업 + Save 차단으로 데이터 손실 방지.
-                BackupCorruptedFile(GetSettingsFilePath(_currentGameId), ex.Message);
+                PersistenceUtils.BackupCorruptedFile(GetSettingsFilePath(_currentGameId), "[PerSaveSettings]", ex.Message);
                 if (!string.IsNullOrEmpty(_currentGameId))
                     _failedGameIds.Add(_currentGameId);
                 Log.Persistence.Error($"[PerSaveSettings] Load error (GameId={_currentGameId}): {ex.Message}. Save 차단 활성화 — 손상 파일은 .corrupted-* 로 백업됨.");
                 _cached = new PerSaveSettings();
-            }
-        }
-
-        /// <summary>v3.117.60: 손상 파일을 timestamp 접미사로 백업.</summary>
-        private static void BackupCorruptedFile(string filePath, string reason)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
-                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                var backupPath = $"{filePath}.corrupted-{stamp}";
-                File.Copy(filePath, backupPath, overwrite: false);
-                Log.Persistence.Warn($"[PerSaveSettings] Corrupted file backed up: {Path.GetFileName(backupPath)} (reason: {reason})");
-            }
-            catch (Exception ex)
-            {
-                Log.Persistence.Error($"[PerSaveSettings] Backup failed for {filePath}: {ex.Message}");
             }
         }
 
@@ -451,6 +444,14 @@ namespace CompanionAI_v3.Settings
             try
             {
                 string path = GetSettingsPath();
+
+                // v3.117.65: 같은 폴더에 .corrupted-* 가 이미 존재하면 손상 marker 영구화.
+                if (File.Exists(path) && PersistenceUtils.HasCorruptedBackup(path))
+                {
+                    _loadFailed = true;
+                    Log.Persistence.Warn("Existing settings.json.corrupted-* backup detected — Save remains blocked until user recovers manually.");
+                }
+
                 if (File.Exists(path))
                 {
                     string json = File.ReadAllText(path);
@@ -458,13 +459,14 @@ namespace CompanionAI_v3.Settings
                     if (settings != null)
                     {
                         Instance = settings;
-                        _loadFailed = false;
-                        Log.Persistence.Info("Settings loaded successfully");
+                        // 정상 로드 — 단 .corrupted-* 가 남아있으면 _loadFailed 는 위에서 set 된 상태 유지.
+                        if (!_loadFailed) Log.Persistence.Info("Settings loaded successfully");
+                        else Log.Persistence.Info("Settings loaded — Save blocked (corruption backup exists)");
                     }
                     else
                     {
                         // v3.117.60: deserialize 결과 null 도 corruption 으로 취급 → 백업 + Save 차단.
-                        BackupCorruptedFile(path, "deserialize returned null");
+                        PersistenceUtils.BackupCorruptedFile(path, "[ModSettings]", "deserialize returned null");
                         _loadFailed = true;
                         Log.Persistence.Warn("settings.json deserialize returned null → 빈 설정 사용, Save 차단됨. .corrupted-* 백업 확인 필요.");
                         Instance = new ModSettings();
@@ -481,7 +483,7 @@ namespace CompanionAI_v3.Settings
             catch (Exception ex)
             {
                 // v3.117.60: 손상 파일 백업 후 Save 차단.
-                BackupCorruptedFile(GetSettingsPath(), ex.Message);
+                PersistenceUtils.BackupCorruptedFile(GetSettingsPath(), "[ModSettings]", ex.Message);
                 _loadFailed = true;
                 Log.Persistence.Error($"Failed to load settings: {ex.Message}. Save 차단 활성화 — .corrupted-* 백업 확인 필요.");
                 Instance = new ModSettings();
@@ -497,23 +499,6 @@ namespace CompanionAI_v3.Settings
 
             // ★ v3.1.30: AI 설정 로드 (Response Curves, Role 가중치 등)
             AIConfig.Load(modEntry.Path);
-        }
-
-        /// <summary>v3.117.60: 손상 파일을 timestamp 접미사로 백업.</summary>
-        private static void BackupCorruptedFile(string filePath, string reason)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
-                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                var backupPath = $"{filePath}.corrupted-{stamp}";
-                File.Copy(filePath, backupPath, overwrite: false);
-                Log.Persistence.Warn($"Corrupted file backed up: {Path.GetFileName(backupPath)} (reason: {reason})");
-            }
-            catch (Exception ex)
-            {
-                Log.Persistence.Error($"Backup failed for {filePath}: {ex.Message}");
-            }
         }
 
         public static void Save()

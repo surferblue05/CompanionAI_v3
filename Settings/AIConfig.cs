@@ -77,6 +77,13 @@ namespace CompanionAI_v3.Settings
             string configPath = Path.Combine(modPath, "aiconfig.json");
             bool fileExisted = File.Exists(configPath);
 
+            // v3.117.65: 같은 폴더에 .corrupted-* 가 이미 존재하면 손상 marker 영구화.
+            if (fileExisted && PersistenceUtils.HasCorruptedBackup(configPath))
+            {
+                _loadFailed = true;
+                Log.Persistence.Warn("[AIConfig] Existing aiconfig.json.corrupted-* backup detected — Save remains blocked until user recovers manually.");
+            }
+
             try
             {
                 if (fileExisted)
@@ -87,17 +94,18 @@ namespace CompanionAI_v3.Settings
                     if (config != null)
                     {
                         Instance = config;
-                        _loadFailed = false;
+                        // 정상 로드 — 단 .corrupted-* 가 남아있으면 _loadFailed 는 위에서 set 된 상태 유지.
 
                         // null 보호 (구버전 JSON 호환 또는 필드 누락 시)
                         if (Instance.AoE == null) Instance.AoE = new AoEConfig();
                         if (Instance.WeaponRotation == null) Instance.WeaponRotation = new WeaponRotationConfig();
 
-                        Log.Persistence.Info($"[AIConfig] Loaded from {configPath}");
+                        if (!_loadFailed) Log.Persistence.Info($"[AIConfig] Loaded from {configPath}");
+                        else Log.Persistence.Info($"[AIConfig] Loaded from {configPath} — Save blocked (corruption backup exists)");
                         return;
                     }
                     // v3.117.60: deserialize 결과 null → corruption 처리.
-                    BackupCorruptedFile(configPath, "deserialize returned null");
+                    PersistenceUtils.BackupCorruptedFile(configPath, "[AIConfig]", "deserialize returned null");
                     _loadFailed = true;
                     Log.Persistence.Warn("[AIConfig] aiconfig.json deserialize returned null → 빈 설정 사용, Save 차단됨.");
                     Instance = CreateDefault();
@@ -107,7 +115,7 @@ namespace CompanionAI_v3.Settings
             catch (Exception ex)
             {
                 // v3.117.60: 손상 파일 백업 + Save 차단.
-                BackupCorruptedFile(configPath, ex.Message);
+                PersistenceUtils.BackupCorruptedFile(configPath, "[AIConfig]", ex.Message);
                 _loadFailed = true;
                 Log.Persistence.Error($"[AIConfig] Failed to load: {ex.Message}. Save 차단 활성화 — .corrupted-* 백업 확인 필요.");
                 Instance = CreateDefault();
@@ -118,23 +126,6 @@ namespace CompanionAI_v3.Settings
             Instance = CreateDefault();
             Save();
             Log.Persistence.Info("[AIConfig] Created default aiconfig.json");
-        }
-
-        /// <summary>v3.117.60: 손상 파일을 timestamp 접미사로 백업.</summary>
-        private static void BackupCorruptedFile(string filePath, string reason)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
-                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                var backupPath = $"{filePath}.corrupted-{stamp}";
-                File.Copy(filePath, backupPath, overwrite: false);
-                Log.Persistence.Warn($"[AIConfig] Corrupted file backed up: {Path.GetFileName(backupPath)} (reason: {reason})");
-            }
-            catch (Exception ex)
-            {
-                Log.Persistence.Error($"[AIConfig] Backup failed for {filePath}: {ex.Message}");
-            }
         }
 
         public static void Save()
