@@ -399,6 +399,17 @@ namespace CompanionAI_v3.Planning.Plans
                         continue;
                     }
 
+                    // 진단 전용 (차단 없음): Warp Relay 경로에는 AoE 아군 안전 검사가 없음.
+                    // Raven 은 의도적으로 아군/적 근처에 배치되므로 차단 검사를 넣으면 오탐으로 기능
+                    // 전체가 막힐 위험 — 패턴에 아군이 실제로 포함되는지 로그로만 수집해 판단.
+                    var warpProbePos = willRelocateForDebuff ? optimalPos.Position : ravenPosForDebuff;
+                    if (!AoESafetyChecker.IsAoESafeForUnitTargetFromPosition(
+                            attack, warpProbePos, situation.Unit, situation.Familiar, situation.Allies))
+                    {
+                        Log.Planning.Warn($"[{RoleName}] [진단] Warp Relay attack '{attack.Name}': AoE 패턴에 아군 포함 가능성 " +
+                            $"(probe={(willRelocateForDebuff ? "relocate-dest" : "current")}) — 차단하지 않음, 인게임 friendly fire 확인 필요");
+                    }
+
                     remainingAP -= cost;
                     if (!string.IsNullOrEmpty(guid))
                         usedAbilityGuids.Add(guid);
