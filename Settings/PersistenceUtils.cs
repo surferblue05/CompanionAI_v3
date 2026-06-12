@@ -1,21 +1,22 @@
 using System;
 using System.IO;
+using System.Linq;
 using CompanionAI_v3.Logging;
 
 namespace CompanionAI_v3.Settings
 {
     /// <summary>
-    /// v3.117.65: 영속화 파일 손상 복구 공통 헬퍼.
-    /// PerSaveSettings / ModSettings / AIConfig 가 같은 corruption guard 패턴을 공유 (3곳 동일 코드 중복 → 추출).
+    /// 영속화 파일 손상 복구 공통 헬퍼.
+    /// PerSaveSettings / ModSettings / AIConfig 가 같은 corruption guard 패턴을 공유.
+    /// .corrupted-* 백업 파일이 곧 "Save 차단" marker — 디스크에 있어 mod 재로드에도 영속,
+    /// 사용자가 복구 후 백업을 삭제하면 차단 즉시 해제.
     /// </summary>
     public static class PersistenceUtils
     {
-        /// <summary>30일 지난 백업 자동 삭제 임계값.</summary>
-        private const int BackupRetentionDays = 30;
-
         /// <summary>
-        /// 손상 파일을 timestamp 접미사로 백업. 같은 초에 충돌 시 -1, -2 ... fallback.
-        /// 추가로 같은 폴더의 BackupRetentionDays 일 지난 .corrupted-* 자동 삭제.
+        /// 손상 파일을 timestamp 접미사로 백업.
+        /// 기존 .corrupted-* 가 이미 있으면 skip — Save 가 차단된 동안 원본은 변하지 않으므로
+        /// 매 실행마다 같은 내용을 다시 백업할 필요 없음 (누적 방지, marker 도 이미 존재).
         /// </summary>
         public static void BackupCorruptedFile(string filePath, string logPrefix, string reason)
         {
@@ -23,24 +24,17 @@ namespace CompanionAI_v3.Settings
             {
                 if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
 
-                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                var basePath = $"{filePath}.corrupted-{stamp}";
-                var backupPath = basePath;
-
-                // v3.117.65: 같은 초 충돌 시 -1, -2 ... suffix. 최대 100 시도 (실용적 한계).
-                for (int i = 1; File.Exists(backupPath) && i < 100; i++)
-                    backupPath = $"{basePath}-{i}";
-
-                if (File.Exists(backupPath))
+                if (HasCorruptedBackup(filePath))
                 {
-                    Log.Persistence.Error($"{logPrefix} Backup gave up after 100 collisions for {Path.GetFileName(filePath)}. Aborting backup, save will still be blocked.");
+                    Log.Persistence.Debug($"{logPrefix} Backup skipped — existing .corrupted-* already present (reason: {reason})");
                     return;
                 }
 
+                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                var backupPath = $"{filePath}.corrupted-{stamp}";
+
                 File.Copy(filePath, backupPath, overwrite: false);
                 Log.Persistence.Warn($"{logPrefix} Corrupted file backed up: {Path.GetFileName(backupPath)} (reason: {reason})");
-
-                PruneStaleBackups(filePath, logPrefix);
             }
             catch (Exception ex)
             {
@@ -49,8 +43,8 @@ namespace CompanionAI_v3.Settings
         }
 
         /// <summary>
-        /// 같은 폴더에 `{file}.corrupted-*` 백업 존재 여부.
-        /// Load 진입 시 호출하여 손상 marker 영구화 — static `_loadFailed` flag 가 mod 재로드로 휘발되는 문제 방지.
+        /// 같은 폴더에 `{file}.corrupted-*` 백업 존재 여부 = Save 차단 marker.
+        /// Save 진입 시 호출 — static flag 가 mod 재로드로 휘발되어도 디스크 marker 로 차단 유지.
         /// </summary>
         public static bool HasCorruptedBackup(string filePath)
         {
@@ -60,47 +54,13 @@ namespace CompanionAI_v3.Settings
                 var dir = Path.GetDirectoryName(filePath);
                 var pattern = Path.GetFileName(filePath) + ".corrupted-*";
                 if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return false;
-                return Directory.EnumerateFiles(dir, pattern).GetEnumerator().MoveNext();
+                return Directory.EnumerateFiles(dir, pattern).Any();
             }
             catch
             {
                 // 권한/경로 에러 시 safe default = false (false negative 가 false positive 보다 안전 —
                 // Save 차단 false positive 는 사용자 데이터 손실 = 더 큰 비용)
                 return false;
-            }
-        }
-
-        /// <summary>BackupRetentionDays 일 지난 .corrupted-* 자동 삭제. 무제한 누적 방지.</summary>
-        private static void PruneStaleBackups(string filePath, string logPrefix)
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(filePath);
-                var pattern = Path.GetFileName(filePath) + ".corrupted-*";
-                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
-
-                var cutoff = DateTime.Now.AddDays(-BackupRetentionDays);
-                int pruned = 0;
-                foreach (var bak in Directory.EnumerateFiles(dir, pattern))
-                {
-                    try
-                    {
-                        if (File.GetLastWriteTime(bak) < cutoff)
-                        {
-                            File.Delete(bak);
-                            pruned++;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Persistence.Debug($"{logPrefix} Prune skip {Path.GetFileName(bak)}: {ex.Message}");
-                    }
-                }
-                if (pruned > 0) Log.Persistence.Debug($"{logPrefix} Pruned {pruned} stale backups (>{BackupRetentionDays}d)");
-            }
-            catch (Exception ex)
-            {
-                Log.Persistence.Debug($"{logPrefix} Prune scan failed: {ex.Message}");
             }
         }
     }
