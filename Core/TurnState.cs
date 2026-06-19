@@ -16,7 +16,10 @@ namespace CompanionAI_v3.Core
         Ready,
 
         /// <summary>Analyze 완료 — 다음 프레임에 Plan+Execute 수행</summary>
-        WaitingForPlan
+        WaitingForPlan,
+
+        /// <summary>★ Phase B: 무거운 위치 평가를 여러 프레임에 분산 계산 중 (freeze 방지). 완료 시 WaitingForPlan.</summary>
+        PrecomputePositions
     }
 
     /// <summary>
@@ -162,6 +165,12 @@ namespace CompanionAI_v3.Core
         /// 스터터링 방지: 한 프레임에 50~150ms 계산 → 2프레임에 분산
         /// </summary>
         public ComputePhase CurrentComputePhase { get; set; } = ComputePhase.Ready;
+
+        /// <summary>★ Phase B: PrecomputePositions 의 증분 평가 상태 (null=미시작/완료).</summary>
+        public CompanionAI_v3.GameInterface.MovementAPI.EvalState PrecomputeState { get; set; }
+
+        /// <summary>★ Phase B: precompute 경과 프레임 (타임아웃 가드).</summary>
+        public int PrecomputeFrames { get; set; }
 
         /// <summary>
         /// ★ v3.9.04: Analyze 결과를 다음 프레임의 Plan+Execute로 전달

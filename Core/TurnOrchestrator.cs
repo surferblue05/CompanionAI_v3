@@ -173,10 +173,16 @@ namespace CompanionAI_v3.Core
                 NotifyRoundChangeIfNeeded();
 
                 // ★ v3.9.04: Phase 분기 — 스터터링 방지를 위한 프레임 분산
+                // ★ Phase B: PrecomputePositions 추가 (toggle ON 시 plan 전 위치 평가를 프레임 분산)
                 if (turnState.CurrentComputePhase == ComputePhase.WaitingForPlan)
                 {
                     // Phase 2: Plan + Execute (이전 프레임에서 Analyze 완료)
                     return PlanAndExecutePhase(unit, unitId, unitName, turnState);
+                }
+                else if (turnState.CurrentComputePhase == ComputePhase.PrecomputePositions)
+                {
+                    // Phase 1.5: 무거운 위치 평가를 프레임 분산 계산 (freeze 방지)
+                    return PrecomputePhase(unit, unitId, unitName, turnState);
                 }
                 else
                 {
@@ -217,12 +223,46 @@ namespace CompanionAI_v3.Core
             // ★ v3.20.0: [CombatReport] 시점1 — 턴 시작 기록
             CombatReportCollector.Instance.OnTurnStart(unit, situation);
 
-            // 다음 프레임에서 Plan+Execute 수행
+            // 다음 프레임에서 Plan+Execute 수행 (★ Phase B: toggle ON 시 위치 평가 프레임 분산 먼저)
             turnState.PendingSituation = situation;
-            turnState.CurrentComputePhase = ComputePhase.WaitingForPlan;
+            turnState.PrecomputeState = null;
+            turnState.PrecomputeFrames = 0;
+            turnState.CurrentComputePhase = Settings.SC.EnableFrameSpreadEval
+                ? ComputePhase.PrecomputePositions
+                : ComputePhase.WaitingForPlan;
 
             Log.Engine.Debug($"[Orchestrator] {unitName}: Analysis complete ({_profilerStopwatch.ElapsedMilliseconds}ms) — deferring plan to next frame");
             return ExecutionResult.Waiting("Analysis complete");
+        }
+
+        /// <summary>
+        /// ★ Phase B: 무거운 위치 평가(RangedAttackPosition)를 여러 프레임에 분산 — 첫턴 freeze 방지.
+        /// 매 프레임 시간예산(SC.FrameSpreadBudgetMs)만큼 계산, 미완이면 Waiting(게임 렌더링 계속).
+        /// 완료/타임아웃 시 WaitingForPlan 으로 전환 → plan 은 warm 캐시 HIT 으로 즉시 진행.
+        /// 결과는 동기 계산과 동일(타일별 독립) — 결정 로직 무변경, 타이밍만 분산.
+        /// </summary>
+        private ExecutionResult PrecomputePhase(BaseUnitEntity unit, string unitId, string unitName, TurnState turnState)
+        {
+            // 첫 진입: precompute eval 빌드 (null 이면 적/타일 없음 → 바로 plan 진행)
+            if (turnState.PrecomputeState == null && turnState.PrecomputeFrames == 0)
+                turnState.PrecomputeState = GameInterface.MovementAPI.BeginPrecompute(unit, turnState.PendingSituation);
+
+            bool done = turnState.PrecomputeState == null
+                || GameInterface.MovementAPI.EvaluateAllPositionsIncrementalStep(turnState.PrecomputeState, Settings.SC.FrameSpreadBudgetMs);
+
+            turnState.PrecomputeFrames++;
+
+            if (done || turnState.PrecomputeFrames > Settings.SC.FrameSpreadMaxFrames)
+            {
+                if (!done)
+                    Log.Engine.Warn($"[Orchestrator] {unitName}: Precompute timeout ({turnState.PrecomputeFrames}f) — proceeding to plan");
+                turnState.PrecomputeState = null;
+                turnState.PrecomputeFrames = 0;
+                turnState.CurrentComputePhase = ComputePhase.WaitingForPlan;
+                return ExecutionResult.Waiting("Precompute complete");
+            }
+
+            return ExecutionResult.Waiting("Precomputing positions");
         }
 
         /// <summary>

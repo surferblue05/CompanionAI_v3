@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using CompanionAI_v3.Analysis;
 using CompanionAI_v3.Logging;
 using Kingmaker.EntitySystem.Entities;
 using Kingmaker.Pathfinding;
@@ -466,6 +467,40 @@ namespace CompanionAI_v3.GameInterface
                 Log.Engine.Debug($"[Perf] caller stack parse failed: {ex.Message}");
                 return "?";
             }
+        }
+
+        /// <summary>
+        /// ★ Phase B: 턴 시작 시 무거운 RangedAttackPosition 평가를 미리 (증분) 데우기 위한 EvalState 생성.
+        /// plan 의 FindRangedAttackPositionSync 와 동일 인자(reachableTiles/enemies/weaponRange/minSafe)로
+        /// argKey 일치 → plan 이 cache HIT 으로 즉시 진행. 불일치(R&G 등 MP 변동)면 plan 이 동기 계산(무해 폴백).
+        /// aiCells 빌드는 FindRangedAttackPositionSync(30-99)와 동일 로직 — 변경 시 양쪽 동기화 필요.
+        /// </summary>
+        public static EvalState BeginPrecompute(BaseUnitEntity unit, CompanionAI_v3.Analysis.Situation situation)
+        {
+            if (unit == null || situation == null || situation.Enemies == null || situation.Enemies.Count == 0)
+                return null;
+
+            float predictedMP = situation.CurrentMP;
+            var tiles = predictedMP > 0
+                ? FindAllReachableTilesWithThreatsSync(unit, predictedMP)
+                : FindAllReachableTilesWithThreatsSync(unit);
+            if (tiles == null || tiles.Count == 0) return null;
+
+            bool avoidHazardZones = !CombatAPI.IsUnitInHazardZone(unit);
+            var aiCells = new Dictionary<GraphNode, WarhammerPathAiCell>();
+            foreach (var kvp in tiles)
+            {
+                var aiCell = kvp.Value;
+                var node = aiCell.Node as CustomGridNodeBase;
+                if (node == null || !aiCell.IsCanStand) continue;
+                if (!BattlefieldGrid.Instance.ValidateNode(unit, node)) continue;
+                if (avoidHazardZones && CombatAPI.IsPositionInHazardZone(node.Vector3Position, unit)) continue;
+                aiCells[kvp.Key] = aiCell;
+            }
+            if (aiCells.Count == 0) return null;
+
+            float weaponRange = situation.WeaponRange.EffectiveRange > 0 ? situation.WeaponRange.EffectiveRange : Settings.SC.FallbackWeaponRange;
+            return BeginEvaluateAllPositions(unit, aiCells, situation.Enemies, MovementGoal.RangedAttackPosition, weaponRange, situation.MinSafeDistance);
         }
 
         public static List<PositionScore> EvaluateAllPositions(
