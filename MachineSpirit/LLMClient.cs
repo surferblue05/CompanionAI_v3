@@ -323,8 +323,9 @@ namespace CompanionAI_v3.MachineSpirit
                 if (closeIdx >= 0)
                 {
                     inBlock = false;
-                    buffer = buffer.Substring(closeIdx + 8); // after </think>
-                    return buffer.Length > 0 ? buffer : null;
+                    string result = buffer.Substring(closeIdx + 8); // after </think>
+                    buffer = "";  // 버퍼를 비워야 다음 청크에서 이 잔여분이 재방출(중복)되지 않음 (same-chunk 분기와 동일)
+                    return result.Length > 0 ? result : null;
                 }
                 // Still inside — might have partial </think> at end, keep buffering
                 if (buffer.Length > 200) buffer = buffer.Substring(buffer.Length - 20); // prevent unbounded growth
