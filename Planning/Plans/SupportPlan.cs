@@ -541,8 +541,12 @@ namespace CompanionAI_v3.Planning.Plans
             // ★ v3.7.06: 사역마 Master는 아군 방향으로 이동 (버프 시전을 위해)
             bool hasMoveInPlan = actions.Any(a => a.Type == ActionType.Move ||
                 (a.Type == ActionType.Attack && a.Ability != null && AbilityDatabase.IsGapCloser(a.Ability)));
-            // ★ v3.8.45: 원거리 + AvailableAttacks=0 → 적에게 접근 무의미
-            bool noAttackNoApproach = situation.PrefersRanged && situation.AvailableAttacks.Count == 0;
+            // 원거리 + (보유 공격 0 OR 타격 가능 적 0) → 적 접근 무의미 → 안전 재배치(Phase 8.7) 경로.
+            // Support 는 공격보다 안전·지원 우선이므로, 공격을 *보유*해도 못 *치는* 상태(예: AoE 가 항상
+            // 아군 차단)면 노출된 채 머물지 말고 사거리 내 가장 안전한 위치로 이동해야 한다.
+            // (DPS/원거리 교전 유닛은 사거리 진입 접근이 정당하므로 이 완화를 적용하지 않음 — SupportPlan 한정.)
+            bool noAttackNoApproach = situation.PrefersRanged &&
+                (situation.AvailableAttacks.Count == 0 || !situation.HasHittableEnemies);
             // NeedsReposition도 noAttackNoApproach 적용
             bool needsMovement = (situation.NeedsReposition || (!didPlanAttack && situation.HasLivingEnemies)) && !noAttackNoApproach;
             bool canMove = situation.CanMove || remainingMP > 0;
