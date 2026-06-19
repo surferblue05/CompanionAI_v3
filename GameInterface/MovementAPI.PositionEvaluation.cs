@@ -480,7 +480,13 @@ namespace CompanionAI_v3.GameInterface
             if (unit == null || situation == null || situation.Enemies == null || situation.Enemies.Count == 0)
                 return null;
 
-            float predictedMP = situation.CurrentMP;
+            // 무기 로테이션 시 plan(TacticalOptionEvaluator:360-379)이 weaponRange 를 조정 → argKey 불일치 위험.
+            // precompute 스킵 → 동기 계산 폴백(무해). 비-로테이션 유닛(대부분)만 precompute.
+            if (situation.WeaponRotationAvailable && situation.HasWeaponSwitchBonus && !situation.HasAttackedThisTurn)
+                return null;
+
+            // ★ predictedMP/weaponRange 는 plan(TacticalOptionEvaluator:382, 350-353)과 동일해야 argKey(_evalCache) 일치.
+            float predictedMP = situation.MPBuffExpectedRecovery > 0 ? situation.MPBuffExpectedRecovery : 0f;
             var tiles = predictedMP > 0
                 ? FindAllReachableTilesWithThreatsSync(unit, predictedMP)
                 : FindAllReachableTilesWithThreatsSync(unit);
@@ -499,7 +505,10 @@ namespace CompanionAI_v3.GameInterface
             }
             if (aiCells.Count == 0) return null;
 
-            float weaponRange = situation.WeaponRange.EffectiveRange > 0 ? situation.WeaponRange.EffectiveRange : Settings.SC.FallbackWeaponRange;
+            float weaponRange = situation.BlendedAttackRange > 0
+                ? situation.BlendedAttackRange
+                : situation.WeaponRange.EffectiveRange;
+            if (weaponRange <= 0f) weaponRange = Settings.SC.FallbackWeaponRange;
             return BeginEvaluateAllPositions(unit, aiCells, situation.Enemies, MovementGoal.RangedAttackPosition, weaponRange, situation.MinSafeDistance);
         }
 
