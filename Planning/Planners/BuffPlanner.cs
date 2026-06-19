@@ -34,8 +34,6 @@ namespace CompanionAI_v3.Planning.Planners
         /// </summary>
         public static PlannedAction PlanUltimate(Situation situation, ref float remainingAP, string roleName)
         {
-            var unit = situation.Unit;
-
             // 모든 궁극기 수집 (HeroicAct + DesperateMeasure)
             var ultimates = situation.AvailableBuffs
                 .Where(a => CombatAPI.IsUltimateAbility(a))
@@ -92,95 +90,86 @@ namespace CompanionAI_v3.Planning.Planners
                     continue;
                 }
 
-                // 타겟 유형에 따라 적절한 타겟 결정
-                var targetType = CombatAPI.ClassifyUltimateTarget(ability);
-                TargetWrapper target = null;
-                string targetDesc = "";
-
-                switch (targetType)
-                {
-                    case CombatAPI.UltimateTargetType.SelfBuff:
-                        // Personal 궁극기 → 자기 자신
-                        target = new TargetWrapper(unit);
-                        targetDesc = "self";
-                        break;
-
-                    case CombatAPI.UltimateTargetType.ImmediateAttack:
-                        // 적 타겟 궁극기 → 최적 적 선택
-                        var bestEnemy = situation.BestTarget ?? situation.NearestEnemy;
-                        if (bestEnemy != null)
-                        {
-                            target = new TargetWrapper(bestEnemy);
-                            targetDesc = bestEnemy.CharacterName;
-                        }
-                        break;
-
-                    case CombatAPI.UltimateTargetType.AllyBuff:
-                        // 아군 타겟 궁극기 → 최적 아군 선택 (가장 강한 딜러 우선)
-                        var bestAlly = SelectBestAllyForUltimate(situation);
-                        if (bestAlly != null)
-                        {
-                            target = new TargetWrapper(bestAlly);
-                            targetDesc = bestAlly.CharacterName;
-                        }
-                        break;
-
-                    case CombatAPI.UltimateTargetType.AreaEffect:
-                        // 지점 타겟 궁극기 → 최적 위치 계산
-                        var bestPos = FindBestUltimatePosition(ability, situation);
-                        if (bestPos.HasValue)
-                        {
-                            target = new TargetWrapper(bestPos.Value);
-                            targetDesc = $"({bestPos.Value.x:F1},{bestPos.Value.z:F1})";
-                        }
-                        break;
-
-                    default:
-                        // 알 수 없는 타겟 → self 시도
-                        target = new TargetWrapper(unit);
-                        targetDesc = "self(fallback)";
-                        break;
-                }
-
-                if (target == null)
-                {
-                    if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanUltimate: {ability.Name} skipped - no valid target for {targetType}");
-                    continue;
-                }
-
-                string reason;
-                if (CombatAPI.CanUseAbilityOn(ability, target, out reason))
+                // 타겟 유형(Self/적/아군/지점)을 ClassifyUltimateTarget 으로 해석하고 그에 맞는 액션 생성.
+                // PlanHeroicAct 와 공유 — 둘 다 같은 HeroicAct/DesperateMeasure 능력군을 다룬다.
+                var action = BuildUltimateAction(ability, situation, cost, roleName, "★ ULTIMATE");
+                if (action != null)
                 {
                     remainingAP -= cost;
-                    Log.Planning.Info($"[{roleName}] ★ ULTIMATE: {ability.Name} -> {targetDesc} " +
-                        $"(type={targetType}, score={scored[idx].Score:F0}, heroic={ability.Blueprint?.IsHeroicAct})");
-
-                    // 타겟 유형에 따른 PlannedAction 생성
-                    switch (targetType)
-                    {
-                        case CombatAPI.UltimateTargetType.ImmediateAttack:
-                            var targetEntity = target.Entity as BaseUnitEntity;
-                            return PlannedAction.Attack(ability, targetEntity,
-                                $"Ultimate attack: {ability.Name}", cost);
-
-                        case CombatAPI.UltimateTargetType.AreaEffect:
-                            return PlannedAction.PositionalBuff(ability, target.Point,
-                                $"Ultimate area: {ability.Name}", cost);
-
-                        default:
-                            var buffTarget = (target.Entity as BaseUnitEntity) ?? unit;
-                            return PlannedAction.Buff(ability, buffTarget,
-                                $"Ultimate: {ability.Name}", cost);
-                    }
-                }
-                else
-                {
-                    if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanUltimate: {ability.Name} -> {targetDesc} failed: {reason}");
+                    return action;
                 }
             }
 
             if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanUltimate: All candidates failed");
             return null;
+        }
+
+        /// <summary>
+        /// HeroicAct/DesperateMeasure 능력의 타겟 유형(ClassifyUltimateTarget)에 맞는 타겟을 해석하고
+        /// 그에 맞는 PlannedAction 을 생성한다. PlanUltimate(무료 궁극기)와 PlanHeroicAct(Momentum
+        /// Heroic Act)가 공유 — 두 경로 모두 같은 능력군을 다루므로 타겟 해석이 동일해야 한다.
+        /// AP 는 차감하지 않는다(호출자가 성공 시 차감). 사용 불가/타겟 없음이면 null.
+        /// </summary>
+        private static PlannedAction BuildUltimateAction(AbilityData ability, Situation situation, float cost, string roleName, string contextLabel)
+        {
+            var unit = situation.Unit;
+            var targetType = CombatAPI.ClassifyUltimateTarget(ability);
+            TargetWrapper target = null;
+            string targetDesc = "";
+
+            switch (targetType)
+            {
+                case CombatAPI.UltimateTargetType.ImmediateAttack:
+                    var bestEnemy = situation.BestTarget ?? situation.NearestEnemy;
+                    if (bestEnemy != null) { target = new TargetWrapper(bestEnemy); targetDesc = bestEnemy.CharacterName; }
+                    break;
+
+                case CombatAPI.UltimateTargetType.AllyBuff:
+                    var bestAlly = SelectBestAllyForUltimate(situation);
+                    if (bestAlly != null) { target = new TargetWrapper(bestAlly); targetDesc = bestAlly.CharacterName; }
+                    break;
+
+                case CombatAPI.UltimateTargetType.AreaEffect:
+                    var bestPos = FindBestUltimatePosition(ability, situation);
+                    if (bestPos.HasValue) { target = new TargetWrapper(bestPos.Value); targetDesc = $"({bestPos.Value.x:F1},{bestPos.Value.z:F1})"; }
+                    break;
+
+                case CombatAPI.UltimateTargetType.SelfBuff:
+                    target = new TargetWrapper(unit); targetDesc = "self";
+                    break;
+
+                default:
+                    target = new TargetWrapper(unit); targetDesc = "self(fallback)";
+                    break;
+            }
+
+            if (target == null)
+            {
+                if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] {contextLabel}: {ability.Name} skipped - no valid target for {targetType}");
+                return null;
+            }
+
+            string reason;
+            if (!CombatAPI.CanUseAbilityOn(ability, target, out reason))
+            {
+                if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] {contextLabel}: {ability.Name} -> {targetDesc} failed: {reason}");
+                return null;
+            }
+
+            Log.Planning.Info($"[{roleName}] {contextLabel}: {ability.Name} -> {targetDesc} (type={targetType}, heroic={ability.Blueprint?.IsHeroicAct})");
+
+            switch (targetType)
+            {
+                case CombatAPI.UltimateTargetType.ImmediateAttack:
+                    return PlannedAction.Attack(ability, target.Entity as BaseUnitEntity, $"{contextLabel} attack: {ability.Name}", cost);
+
+                case CombatAPI.UltimateTargetType.AreaEffect:
+                    return PlannedAction.PositionalBuff(ability, target.Point, $"{contextLabel} area: {ability.Name}", cost);
+
+                default:
+                    var buffTarget = (target.Entity as BaseUnitEntity) ?? unit;
+                    return PlannedAction.Buff(ability, buffTarget, $"{contextLabel}: {ability.Name}", cost);
+            }
         }
 
         /// <summary>
@@ -777,12 +766,11 @@ namespace CompanionAI_v3.Planning.Planners
                 }
             }
 
-            var target = new TargetWrapper(situation.Unit);
             string unitId = situation.Unit.UniqueId;
 
             foreach (var heroic in heroicAbilities)
             {
-                // ★ v3.104.0: 이미 이 플랜에서 선택된 버프면 스킵
+                // 이미 이 플랜에서 선택된 버프면 스킵
                 string heroicGuid = GetBuffGuid(heroic);
                 if (plannedBuffGuids != null && plannedBuffGuids.Contains(heroicGuid)) continue;
 
@@ -797,14 +785,15 @@ namespace CompanionAI_v3.Planning.Planners
 
                 if (AllyStateCache.HasBuff(situation.Unit, heroic)) continue;
 
-                string reason;
-                if (CombatAPI.CanUseAbilityOn(heroic, target, out reason))
+                // 자기 타겟으로 하드코딩하지 않는다 — Death Waltz/Final Salvo/Wild Hunt 등 적 타겟 Heroic Act 는
+                // ClassifyUltimateTarget 으로 적/지점/아군 타겟을 해석해야 시전된다(자기 타겟이면 게임이 거부).
+                var action = BuildUltimateAction(heroic, situation, cost, roleName, "Heroic Act");
+                if (action != null)
                 {
                     AbilityUsageTracker.MarkUsed(unitId, heroic);
                     remainingAP -= cost;
-                    plannedBuffGuids?.Add(heroicGuid);  // ★ v3.104.0: dedup 등록
-                    Log.Planning.Info($"[{roleName}] Heroic Act: {heroic.Name}");
-                    return PlannedAction.Buff(heroic, situation.Unit, "Heroic Act - high momentum", cost);
+                    plannedBuffGuids?.Add(heroicGuid);  // dedup 등록
+                    return action;
                 }
             }
 

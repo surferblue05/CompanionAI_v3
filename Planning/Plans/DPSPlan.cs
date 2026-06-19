@@ -1319,61 +1319,9 @@ namespace CompanionAI_v3.Planning.Plans
 
         #region DPS-Specific Methods
 
-        private new PlannedAction PlanHeroicAct(Situation situation, ref float remainingAP)
-        {
-            var heroicAbilities = situation.AvailableBuffs
-                .Where(a => AbilityDatabase.IsHeroicAct(a))
-                .ToList();
-
-            if (heroicAbilities.Count == 0) return null;
-
-            // ★ v3.26.0: 팀 조율 — 캐리 유닛 우선
-            string priorityId = TeamBlackboard.Instance.HeroicActPriorityUnitId;
-            if (priorityId != null && situation.Unit.UniqueId != priorityId)
-            {
-                bool isEmergency = CombatAPI.GetHPPercent(situation.Unit) < Settings.SC.EmergencyHealHP;
-                bool isCleanup = (situation.Enemies?.Count ?? 0) <= Settings.SC.CleanupEnemyCount;
-                if (!isEmergency && !isCleanup)
-                {
-                    if (Main.IsDebugEnabled)
-                        Log.Planning.Debug($"[DPS] HeroicAct suppressed (priority={priorityId})");
-                    return null;
-                }
-            }
-
-            var target = new TargetWrapper(situation.Unit);
-            string unitId = situation.Unit.UniqueId;
-
-            foreach (var heroic in heroicAbilities)
-            {
-                // ★ v3.104.0: 이미 이 플랜에서 선택된 버프면 스킵 (BasePlan 통합 dedup)
-                string heroicGuid = heroic?.Blueprint?.AssetGuid?.ToString() ?? heroic?.Name ?? "";
-                if (_plannedBuffGuids.Contains(heroicGuid)) continue;
-
-                float cost = CombatAPI.GetAbilityAPCost(heroic);
-                if (cost > remainingAP) continue;
-
-                if (AbilityDatabase.IsSingleUse(heroic) &&
-                    AbilityUsageTracker.WasUsedRecently(unitId, heroic, 6000))
-                {
-                    continue;
-                }
-
-                if (AllyStateCache.HasBuff(situation.Unit, heroic)) continue;
-
-                string reason;
-                if (CombatAPI.CanUseAbilityOn(heroic, target, out reason))
-                {
-                    AbilityUsageTracker.MarkUsed(unitId, heroic);
-                    remainingAP -= cost;
-                    _plannedBuffGuids.Add(heroicGuid);  // ★ v3.104.0: dedup 등록
-                    Log.Planning.Info($"[DPS] Heroic Act: {heroic.Name}");
-                    return PlannedAction.Buff(heroic, situation.Unit, "Heroic Act - high momentum", cost);
-                }
-            }
-
-            return null;
-        }
+        // Heroic Act 는 BasePlan 의 공유 구현(BuffPlanner.PlanHeroicAct → BuildUltimateAction)에 위임한다.
+        // 적 타겟 Heroic Act(Death Waltz/Final Salvo/Wild Hunt 등)를 자기 타겟으로 하드코딩하던 DPS 전용
+        // 중복 오버라이드를 제거 — 그 버그로 적 대상 Heroic Act 가 매 턴 영구 스킵되고 있었다.
 
         private new PlannedAction PlanFinisher(Situation situation, BaseUnitEntity target, ref float remainingAP)
         {
