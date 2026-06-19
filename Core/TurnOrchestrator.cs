@@ -1462,7 +1462,6 @@ namespace CompanionAI_v3.Core
             // 능력 사용 추적 초기화
             AbilityUsageTracker.ClearForUnit(unitId);
             Data.CompanionDialogue.ClearForUnit(unitId);  // ★ v3.9.32: AI Speech 대사 기록 초기화
-            Planning.Planners.MovementPlanner.ResetGapCloserTracking(unit.GetHashCode());  // ★ 갭클로저 실패 재시도 가드 리셋
 
             // ★ Phase 3: LLM Judge 상태 초기화
             ResetLLMJudgeState();
