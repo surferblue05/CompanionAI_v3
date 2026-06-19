@@ -403,6 +403,10 @@ namespace CompanionAI_v3.GameInterface
                 invalidated++;
             }
 
+            // 시전자가 이동 중 AoO/반격/위험지대 피해를 받을 수 있음 → HP 캐시도 무효화 (InvalidateTarget 과 대칭).
+            //   누락 시 GetHPPercent 가 이동 전 HP 를 반환 → 같은 턴 heal/retreat 판단이 stale HP 사용.
+            _hpPercentCache.Remove(casterId);
+
             // ★ v3.8.48: .Keys.ToList() → .Clear() (전부 지우는 거니까)
             // 타겟팅 캐시에서 시전자 능력 관련 항목 제거
             // 주의: 시전자 이동 후 능력의 타겟팅 결과가 달라질 수 있음

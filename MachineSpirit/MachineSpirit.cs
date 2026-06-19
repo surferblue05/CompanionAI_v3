@@ -1389,9 +1389,15 @@ namespace CompanionAI_v3.MachineSpirit
                 summaryMessages,
                 onResponse: summary =>
                 {
-                    _conversationSummary = summary;
-                    _summarizedUpToIndex = endIdx;
-                    Log.MachineSpirit.Debug($"[MachineSpirit] Summary updated: {summary.Length} chars");
+                    // 요약 요청(10-30s) 도중 성격/모델 전환·수동 클리어로 _chatHistory 가 비워졌을 수 있다.
+                    // captured endIdx 가 stale → 범위 밖 값으로 _summarizedUpToIndex 를 고정하면 이후 요약이
+                    // 영구 중단된다(MaybeSummarize 의 unsummarizedCount 가 음수 고정). 현재 히스토리와 정합할 때만 커밋.
+                    if (endIdx <= _chatHistory.Count && endIdx > _summarizedUpToIndex)
+                    {
+                        _conversationSummary = summary;
+                        _summarizedUpToIndex = endIdx;
+                        Log.MachineSpirit.Debug($"[MachineSpirit] Summary updated: {summary.Length} chars");
+                    }
                 }
             );
 
