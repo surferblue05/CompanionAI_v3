@@ -257,6 +257,217 @@ namespace CompanionAI_v3.GameInterface
             FindRetreatCacheMisses = 0;
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // 동기/증분 평가 공유 헬퍼 — 캐시 key/조회/저장 일관성 보장 (양 경로 동일 동작 필수).
+        // 증분 경로(Begin/IncrementalStep)는 프레임 분산용 — TurnOrchestrator 가 시간예산만큼
+        // 호출(PrecomputePositions phase). 동기 EvaluateAllPositions 는 증분을 한 번에 완주.
+        // ─────────────────────────────────────────────────────────────────────
+
+        private static long ComputeEvalArgKey(BaseUnitEntity unit, int reachableTileCount, List<BaseUnitEntity> enemies, int enemyCount, MovementGoal goal, float targetDistance, float minSafeDistance)
+        {
+            unchecked
+            {
+                long h = 17;
+                h = h * 31 + (unit?.GetHashCode() ?? 0);
+                h = h * 31 + reachableTileCount;
+                h = h * 31 + enemyCount;
+                h = h * 31 + (int)goal;
+                h = h * 31 + (int)(targetDistance * 100);
+                h = h * 31 + (int)(minSafeDistance * 100);
+                if (enemies != null)
+                    for (int i = 0; i < enemies.Count; i++)
+                        h = h * 31 + (enemies[i]?.GetHashCode() ?? 0);
+                return h;
+            }
+        }
+
+        private static bool TryGetCachedEval(long argKey, BaseUnitEntity unit, int enemyCount, MovementGoal goal, float targetDistance, float minSafeDistance, int reachableTileCount, string callers, int frame, out List<PositionScore> result)
+        {
+            result = null;
+            if (_evalCache.TryGetValue(argKey, out var snap))
+            {
+                string rejectReason = null;
+                if (!ReferenceEquals(snap.Unit, unit))
+                    rejectReason = $"unit-ref ({snap.Unit?.CharacterName}→{unit?.CharacterName})";
+                else if (snap.Goal != goal)
+                    rejectReason = $"goal ({snap.Goal}→{goal})";
+                else if (snap.TargetDistance != targetDistance)
+                    rejectReason = $"targetDist ({snap.TargetDistance}→{targetDistance})";
+                else if (snap.MinSafeDistance != minSafeDistance)
+                    rejectReason = $"minSafe ({snap.MinSafeDistance}→{minSafeDistance})";
+                else if (snap.ReachableTileCount != reachableTileCount)
+                    rejectReason = $"tileCount ({snap.ReachableTileCount}→{reachableTileCount})";
+                else if (snap.EnemiesCount != enemyCount)
+                    rejectReason = $"enemyCount ({snap.EnemiesCount}→{enemyCount})";
+
+                if (rejectReason == null)
+                {
+                    EvalCacheHits++;
+                    var copy = new List<PositionScore>(snap.Snapshot.Count);
+                    foreach (var s in snap.Snapshot) copy.Add(s.Clone());
+                    Log.Engine.Info($"[Perf] EvaluateAllPositions: CACHE HIT key=0x{argKey:X}, {copy.Count} scores cloned, frame={frame}, callers={callers}");
+                    result = copy;
+                    return true;
+                }
+                EvalCacheMisses++;
+                Log.Engine.Debug($"[Perf] EvaluateAllPositions: cache REJECT key=0x{argKey:X} reason={rejectReason}, frame={frame}, callers={callers}");
+            }
+            else
+            {
+                EvalCacheMisses++;
+                Log.Engine.Debug($"[Perf] EvaluateAllPositions: cache MISS key=0x{argKey:X} (cache size={_evalCache.Count}), frame={frame}, callers={callers}");
+            }
+            return false;
+        }
+
+        private static void StoreEvalCache(long argKey, List<PositionScore> scores, BaseUnitEntity unit, int enemyCount, MovementGoal goal, float targetDistance, float minSafeDistance, int reachableTileCount, int frame)
+        {
+            var snapshot = new List<PositionScore>(scores.Count);
+            foreach (var s in scores) snapshot.Add(s.Clone());
+            _evalCache[argKey] = new EvalSnapshot
+            {
+                Unit = unit,
+                EnemiesCount = enemyCount,
+                Goal = goal,
+                TargetDistance = targetDistance,
+                MinSafeDistance = minSafeDistance,
+                ReachableTileCount = reachableTileCount,
+                Snapshot = snapshot,
+                Frame = frame
+            };
+        }
+
+        /// <summary>
+        /// 위치 평가 증분 상태 — 프레임 분산용. Done=true 면 Result 사용 가능.
+        /// </summary>
+        public class EvalState
+        {
+            public long ArgKey;
+            public BaseUnitEntity Unit;
+            public List<KeyValuePair<GraphNode, WarhammerPathAiCell>> Tiles;
+            public List<BaseUnitEntity> Enemies;
+            public MovementGoal Goal;
+            public float TargetDistance;
+            public float MinSafeDistance;
+            public int EnemyCount;
+            public int ReachableTileCount;
+            public int NextTileIndex;
+            public List<PositionScore> Scores;
+            public bool Done;
+            public List<PositionScore> Result;
+            public string Callers;
+            public long StartTicks;
+        }
+
+        /// <summary>
+        /// 증분 평가 시작 — argKey 계산 + 캐시 조회. HIT 이면 즉시 Done(Result=clone).
+        /// MISS 면 타일 스냅샷 후 진행 준비(Done=false). 이후 EvaluateAllPositionsIncrementalStep 반복.
+        /// </summary>
+        public static EvalState BeginEvaluateAllPositions(
+            BaseUnitEntity unit,
+            Dictionary<GraphNode, WarhammerPathAiCell> reachableTiles,
+            List<BaseUnitEntity> enemies,
+            MovementGoal goal,
+            float targetDistance = 10f,
+            float minSafeDistance = 5f)
+        {
+            if (unit == null || reachableTiles == null || reachableTiles.Count == 0)
+                return new EvalState { Done = true, Result = new List<PositionScore>() };
+
+            _perfLosTicks = 0;
+            _perfLosCount = 0;
+            int enemyCount = enemies?.Count ?? 0;
+            long argKey = ComputeEvalArgKey(unit, reachableTiles.Count, enemies, enemyCount, goal, targetDistance, minSafeDistance);
+
+            string callers = GetEvalCallerStack();
+            int frame = UnityEngine.Time.frameCount;
+
+            if (TryGetCachedEval(argKey, unit, enemyCount, goal, targetDistance, minSafeDistance, reachableTiles.Count, callers, frame, out var cached))
+                return new EvalState { Done = true, Result = cached };
+
+            return new EvalState
+            {
+                ArgKey = argKey,
+                Unit = unit,
+                Tiles = new List<KeyValuePair<GraphNode, WarhammerPathAiCell>>(reachableTiles),
+                Enemies = enemies,
+                Goal = goal,
+                TargetDistance = targetDistance,
+                MinSafeDistance = minSafeDistance,
+                EnemyCount = enemyCount,
+                ReachableTileCount = reachableTiles.Count,
+                NextTileIndex = 0,
+                Scores = new List<PositionScore>(),
+                Done = false,
+                Callers = callers,
+                StartTicks = Stopwatch.GetTimestamp()
+            };
+        }
+
+        /// <summary>
+        /// 증분 한 스텝 — budgetMs 동안 타일 처리(타일별 독립 → 슬라이스 안전, 결과 동일).
+        /// 완료 시 캐시 저장 + Result 설정 후 true 반환. budgetMs=float.MaxValue 면 한 번에 완주(동기).
+        /// </summary>
+        public static bool EvaluateAllPositionsIncrementalStep(EvalState state, float budgetMs)
+        {
+            if (state == null || state.Done) return true;
+
+            long stepStart = Stopwatch.GetTimestamp();
+            long budgetTicks = budgetMs >= float.MaxValue
+                ? long.MaxValue
+                : (long)(budgetMs * Stopwatch.Frequency / 1000.0);
+
+            while (state.NextTileIndex < state.Tiles.Count)
+            {
+                var kvp = state.Tiles[state.NextTileIndex];
+                state.NextTileIndex++;
+
+                var node = kvp.Key as CustomGridNodeBase;
+                var cell = kvp.Value;
+                if (node == null || !cell.IsCanStand)
+                    continue;
+
+                var score = EvaluatePosition(state.Unit, node, cell, state.Enemies, state.Goal, state.TargetDistance, state.MinSafeDistance);
+                state.Scores.Add(score);
+
+                // 예산 소진 시 양보 (다음 프레임 재개). 최소 1타일은 진행.
+                if ((Stopwatch.GetTimestamp() - stepStart) >= budgetTicks)
+                    return false;
+            }
+
+            long totalTicks = Stopwatch.GetTimestamp() - state.StartTicks;
+            double totalMs = totalTicks * 1000.0 / Stopwatch.Frequency;
+            Log.Engine.Debug($"[Perf] EvaluateAllPositions(incr): {state.Scores.Count}t × {state.EnemyCount}e, total {totalMs:F1}ms, goal={state.Goal}, unit={state.Unit?.CharacterName}, key=0x{state.ArgKey:X}, callers={state.Callers}");
+
+            StoreEvalCache(state.ArgKey, state.Scores, state.Unit, state.EnemyCount, state.Goal, state.TargetDistance, state.MinSafeDistance, state.ReachableTileCount, UnityEngine.Time.frameCount);
+            state.Result = state.Scores;
+            state.Done = true;
+            return true;
+        }
+
+        // 진단용 caller stack (3 depth). 비용 있어 평가 1회당 1번만.
+        private static string GetEvalCallerStack()
+        {
+            try
+            {
+                var st = new StackTrace(2, false);
+                var sb = new System.Text.StringBuilder(64);
+                int n = Math.Min(3, st.FrameCount);
+                for (int i = 0; i < n; i++)
+                {
+                    if (i > 0) sb.Append(" ← ");
+                    var m = st.GetFrame(i).GetMethod();
+                    sb.Append(m?.DeclaringType?.Name ?? "?").Append('.').Append(m?.Name ?? "?");
+                }
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                Log.Engine.Debug($"[Perf] caller stack parse failed: {ex.Message}");
+                return "?";
+            }
+        }
+
         public static List<PositionScore> EvaluateAllPositions(
             BaseUnitEntity unit,
             Dictionary<GraphNode, WarhammerPathAiCell> reachableTiles,
@@ -269,137 +480,12 @@ namespace CompanionAI_v3.GameInterface
             if (unit == null || reachableTiles == null || reachableTiles.Count == 0)
                 return scores;
 
-            long totalStartTicks = Stopwatch.GetTimestamp();
-            _perfLosTicks = 0;
-            _perfLosCount = 0;
-            int tileCount = 0;
-            int enemyCount = enemies?.Count ?? 0;
-
-            // 인자 hash — 같은 key 면 같은 인자, 다른 key 면 인자 변동.
-            // v3.117.40: enemies 전체 hashCode 포함 (이전엔 첫 3개만 — SituationAnalyzer 가 매
-            //   Analyze 마다 새 list 를 만들어 ReferenceEquals false reject 발생, 실측 cache hit rate 50%).
-            //   content hash 로 같은 적 set 이면 같은 key → ReferenceEquals 없이 안전한 매칭.
-            long argKey;
-            unchecked
-            {
-                long h = 17;
-                h = h * 31 + (unit?.GetHashCode() ?? 0);
-                h = h * 31 + reachableTiles.Count;
-                h = h * 31 + enemyCount;
-                h = h * 31 + (int)goal;
-                h = h * 31 + (int)(targetDistance * 100);
-                h = h * 31 + (int)(minSafeDistance * 100);
-                if (enemies != null)
-                {
-                    for (int i = 0; i < enemies.Count; i++)
-                        h = h * 31 + (enemies[i]?.GetHashCode() ?? 0);
-                }
-                argKey = h;
-            }
-
-            // 진단: caller stack (3 depth) — replan/dedup 식별
-            string callers;
-            try
-            {
-                var st = new StackTrace(1, false);
-                var sb = new System.Text.StringBuilder(64);
-                int n = Math.Min(3, st.FrameCount);
-                for (int i = 0; i < n; i++)
-                {
-                    if (i > 0) sb.Append(" ← ");
-                    var m = st.GetFrame(i).GetMethod();
-                    sb.Append(m?.DeclaringType?.Name ?? "?").Append('.').Append(m?.Name ?? "?");
-                }
-                callers = sb.ToString();
-            }
-            catch (Exception ex)
-            {
-                Log.Engine.Debug($"[Perf] caller stack parse failed: {ex.Message}");
-                callers = "?";
-            }
-            int frame = UnityEngine.Time.frameCount;
-
-            // Cache lookup — hash + value verification (false hit 차단).
-            // v3.117.40: ReferenceEquals(EnemiesRef) 제거 — SituationAnalyzer 가 매 Analyze 마다
-            //   새 list reference 를 생성하여 같은 적 set 인데도 false reject 되던 문제.
-            //   argKey 가 모든 enemies content hash 포함하므로 length + Unit reference + scalar 값으로 충분.
-            // v3.117.41 진단: cache miss/reject 사유 출력 — 진짜 invalidation 원인 추적.
-            if (_evalCache.TryGetValue(argKey, out var snap))
-            {
-                string rejectReason = null;
-                if (!ReferenceEquals(snap.Unit, unit))
-                    rejectReason = $"unit-ref ({snap.Unit?.CharacterName}→{unit?.CharacterName})";
-                else if (snap.Goal != goal)
-                    rejectReason = $"goal ({snap.Goal}→{goal})";
-                else if (snap.TargetDistance != targetDistance)
-                    rejectReason = $"targetDist ({snap.TargetDistance}→{targetDistance})";
-                else if (snap.MinSafeDistance != minSafeDistance)
-                    rejectReason = $"minSafe ({snap.MinSafeDistance}→{minSafeDistance})";
-                else if (snap.ReachableTileCount != reachableTiles.Count)
-                    rejectReason = $"tileCount ({snap.ReachableTileCount}→{reachableTiles.Count})";
-                else if (snap.EnemiesCount != enemyCount)
-                    rejectReason = $"enemyCount ({snap.EnemiesCount}→{enemyCount})";
-
-                if (rejectReason == null)
-                {
-                    EvalCacheHits++;
-                    // Deep clone snapshot → caller mutation 격리
-                    var copy = new List<PositionScore>(snap.Snapshot.Count);
-                    foreach (var s in snap.Snapshot) copy.Add(s.Clone());
-                    long hitTicks = Stopwatch.GetTimestamp() - totalStartTicks;
-                    double hitMs = hitTicks * 1000.0 / Stopwatch.Frequency;
-                    Log.Engine.Info($"[Perf] EvaluateAllPositions: CACHE HIT key=0x{argKey:X}, {copy.Count} scores cloned in {hitMs:F2}ms, frame={frame}, callers={callers}");
-                    return copy;
-                }
-                else
-                {
-                    EvalCacheMisses++;
-                    Log.Engine.Debug($"[Perf] EvaluateAllPositions: cache REJECT key=0x{argKey:X} reason={rejectReason}, frame={frame}, callers={callers}");
-                }
-            }
-            else
-            {
-                EvalCacheMisses++;
-                Log.Engine.Debug($"[Perf] EvaluateAllPositions: cache MISS key=0x{argKey:X} (cache size={_evalCache.Count}), frame={frame}, callers={callers}");
-            }
-
-            foreach (var kvp in reachableTiles)
-            {
-                var node = kvp.Key as CustomGridNodeBase;
-                var cell = kvp.Value;
-
-                if (node == null || !cell.IsCanStand)
-                    continue;
-
-                var score = EvaluatePosition(unit, node, cell, enemies, goal, targetDistance, minSafeDistance);
-                scores.Add(score);
-                tileCount++;
-            }
-
-            long totalTicks = Stopwatch.GetTimestamp() - totalStartTicks;
-            double totalMs = totalTicks * 1000.0 / Stopwatch.Frequency;
-            double losMs = _perfLosTicks * 1000.0 / Stopwatch.Frequency;
-            Log.Engine.Debug($"[Perf] EvaluateAllPositions: {tileCount}t × {enemyCount}e, LOS {_perfLosCount}×{losMs:F1}ms, other {totalMs - losMs:F1}ms, total {totalMs:F1}ms, goal={goal}, unit={unit?.CharacterName}, key=0x{argKey:X}, frame={frame}, callers={callers}");
-
-            // Cache 저장 — immutable snapshot (deep clone)
-            {
-                var snapshot = new List<PositionScore>(scores.Count);
-                foreach (var s in scores) snapshot.Add(s.Clone());
-                _evalCache[argKey] = new EvalSnapshot
-                {
-                    Unit = unit,
-                    EnemiesCount = enemyCount,
-                    Goal = goal,
-                    TargetDistance = targetDistance,
-                    MinSafeDistance = minSafeDistance,
-                    ReachableTileCount = reachableTiles.Count,
-                    Snapshot = snapshot,
-                    Frame = frame
-                };
-            }
-
-            // ★ v3.8.48: 정렬 제거 (호출자가 필요 시 직접 정렬)
-            return scores;
+            // 증분 경로를 한 번에 완주 — 동기/증분 단일 코드 경로 (BeginEvaluateAllPositions +
+            // EvaluateAllPositionsIncrementalStep). budgetMs=MaxValue → 한 프레임에 전부 계산(기존 동작).
+            // 프레임 분산은 TurnOrchestrator 가 같은 Begin/Step 을 시간예산으로 호출(PrecomputePositions).
+            var state = BeginEvaluateAllPositions(unit, reachableTiles, enemies, goal, targetDistance, minSafeDistance);
+            while (!EvaluateAllPositionsIncrementalStep(state, float.MaxValue)) { }
+            return state.Result ?? scores;
         }
 
         public static PositionScore EvaluatePosition(
