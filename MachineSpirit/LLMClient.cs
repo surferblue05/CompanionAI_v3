@@ -139,6 +139,19 @@ namespace CompanionAI_v3.MachineSpirit
         }
 
         /// <summary>
+        /// ★ thinking 지원 모델 감지 — think:false 로 끄지 않으면 reasoning 에 토큰을 다 써서 content 가
+        /// 비거나 지연됨(gemma4-e4b-rp 무응답 사례 — 8초 thinking, content 빔). Qwen3 + gemma4(thinking 변형) 포함.
+        /// </summary>
+        internal static bool IsThinkingModel(string model)
+        {
+            if (string.IsNullOrEmpty(model)) return false;
+            string m = model.ToLowerInvariant();
+            return m.Contains("qwen3") || m.Contains("qwq")
+                || m.Contains("gemma4") || m.Contains("gemma-4")
+                || m.Contains("thinking") || m.Contains("reasoning") || m.Contains("-think");
+        }
+
+        /// <summary>
         /// Per-family sampling profile. Each model family has different optimal parameters.
         /// </summary>
         private static JObject BuildSamplingOptions(MachineSpiritConfig config, string model)
@@ -243,8 +256,8 @@ namespace CompanionAI_v3.MachineSpirit
                 ["options"] = BuildSamplingOptions(config, config.Model)
             };
 
-            // Qwen3: disable thinking mode (outputs <think> blocks otherwise)
-            if (DetectFamily(config.Model) == ModelFamily.Qwen3)
+            // thinking 모델은 think:false 필수 — 안 끄면 reasoning 에 토큰 소진→content 빔(무응답). gemma4 포함.
+            if (IsThinkingModel(config.Model))
                 requestBody["think"] = false;
 
             // Convert OpenAI-compatible URL (/v1) to native Ollama endpoint (/api/chat)
@@ -564,8 +577,8 @@ namespace CompanionAI_v3.MachineSpirit
                     }
                 };
 
-                // Qwen3: disable thinking mode
-                if (DetectFamily(config.Model) == ModelFamily.Qwen3)
+                // thinking 모델 think:false (gemma4 등 포함 — content 빔 방지)
+                if (IsThinkingModel(config.Model))
                     requestBody["think"] = false;
             }
             else
