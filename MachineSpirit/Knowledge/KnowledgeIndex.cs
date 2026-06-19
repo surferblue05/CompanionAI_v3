@@ -33,7 +33,7 @@ namespace CompanionAI_v3.MachineSpirit.Knowledge
             // Try loading from cache first
             if (TryLoadCache())
             {
-                MachineSpirit.AddSystemMessage($"[Knowledge base loaded — {_entries.Count} entries]");
+                Log.MachineSpirit.Debug($"[KnowledgeIndex] Loaded from cache — {_entries.Count} entries");
                 return;
             }
 
@@ -177,12 +177,8 @@ namespace CompanionAI_v3.MachineSpirit.Knowledge
             Log.MachineSpirit.Debug($"[KnowledgeIndex] Indexing complete: {_entries.Count} entries, BM25 ready");
             SaveCache();
 
-            // ★ v3.70.0: Notify user that knowledge base is ready
-            try
-            {
-                MachineSpirit.AddSystemMessage($"[Knowledge base ready — {_entries.Count} entries indexed]");
-            }
-            catch { }
+            // ★ 지식베이스 준비 완료 — 채팅 노이즈 방지 위해 로그로만 (구 AddSystemMessage 제거)
+            Log.MachineSpirit.Debug($"[KnowledgeIndex] Ready — {_entries.Count} entries indexed");
         }
 
         // Cached GUID list — collected once, shared across all IndexBlueprints calls

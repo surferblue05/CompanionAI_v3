@@ -296,18 +296,6 @@ namespace CompanionAI_v3.MachineSpirit
             ResetIdleTimers();
         }
 
-        /// <summary>Add a system notification to chat (not from LLM, just info text).</summary>
-        public static void AddSystemMessage(string text)
-        {
-            _chatHistory.Add(new ChatMessage
-            {
-                IsUser = false,
-                Text = text,
-                Timestamp = UnityEngine.Time.time,
-                Category = MessageCategory.Scan
-            });
-        }
-
         public static void OnGUI()
         {
             if (!IsActive) return;
