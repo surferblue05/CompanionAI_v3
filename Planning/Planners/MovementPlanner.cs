@@ -211,9 +211,25 @@ namespace CompanionAI_v3.Planning.Planners
         /// ★ v3.1.24: 첫 타겟 실패 시 다른 적 타겟도 시도
         /// ★ v3.5.34: MP 비용 예측 추가 - 실제 타일 경로 기반 계산
         /// </summary>
+        // ★ 갭클로저 실패 재시도 가드 — 갭클로저(점프)를 계획했는데 유닛이 실제로 안 움직였으면(게임이
+        //   이동을 시작했다가 취소 = ResultType.Fail) 같은 턴 재시도 금지. 키벨라 죽음 강림이 인접+MP=0 시
+        //   3회 헛점프(노데미지)하던 버그. 성공(이동 발생)하면 위치가 바뀌어 통과 → 스택형 정상. 턴 시작 시 리셋.
+        private static readonly Dictionary<int, UnityEngine.Vector3> _gapCloserPlanPositions = new Dictionary<int, UnityEngine.Vector3>();
+        public static void ResetGapCloserTracking(int unitId) => _gapCloserPlanPositions.Remove(unitId);
+
         public static PlannedAction PlanGapCloser(Situation situation, BaseUnitEntity target, ref float remainingAP, ref float remainingMP, string roleName, out PlannedAction preMoveAction)
         {
             preMoveAction = null;
+            int gcUnitId = situation.Unit?.GetHashCode() ?? 0;
+            // 직전 갭클로저 계획 위치와 비교 — 유닛이 안 움직였으면(점프 모션 취소 = 실행 실패) 재시도 차단.
+            //   성공(이동 ≥1m)하면 위치 변동 → 통과(스택 정상). 1m 미만 = 사실상 제자리 = 실패.
+            if (situation.Unit != null
+                && _gapCloserPlanPositions.TryGetValue(gcUnitId, out var prevGcPos)
+                && UnityEngine.Vector3.Distance(situation.Unit.Position, prevGcPos) < 1.0f)
+            {
+                if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanGapCloser: 직전 갭클로저가 유닛을 못 움직임(모션 취소/실행 실패) → 재시도 차단");
+                return null;
+            }
             // ★ v3.0.87: 진입 로깅
             if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanGapCloser: target={target?.CharacterName}, AP={remainingAP:F1}, MP={remainingMP:F1}, attacks={situation.AvailableAttacks?.Count ?? 0}");
 
@@ -290,6 +306,7 @@ namespace CompanionAI_v3.Planning.Planners
                                     if (remainingMP < 0) remainingMP = 0;
                                 }
                                 Log.Planning.Info($"[{roleName}] Position gap closer: {gapCloser.Name} -> near {candidateTarget.CharacterName} (AP:{cost:F1}, MP:{mpCost:F1})");
+                                if (situation.Unit != null) _gapCloserPlanPositions[gcUnitId] = situation.Unit.Position;  // 계획 시점 위치 — 안 움직이면 실패 판정
                                 return PlannedAction.PositionalAttack(gapCloser, landingPosition.Value, $"Jump to {candidateTarget.CharacterName}", cost);
                             }
                             else
@@ -353,6 +370,7 @@ namespace CompanionAI_v3.Planning.Planners
                                 if (remainingMP < 0) remainingMP = 0;
                             }
                             Log.Planning.Info($"[{roleName}] Gap closer: {gapCloser.Name} -> {candidateTarget.CharacterName} (AP:{cost:F1}, MP:{mpCost:F1}, pathOK={hasValidPath})");
+                            if (situation.Unit != null) _gapCloserPlanPositions[gcUnitId] = situation.Unit.Position;  // 계획 시점 위치 — 안 움직이면 실패 판정
                             return PlannedAction.Attack(gapCloser, candidateTarget, $"Gap closer on {candidateTarget.CharacterName}", cost);
                         }
                         else
