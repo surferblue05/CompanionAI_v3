@@ -638,7 +638,8 @@ namespace CompanionAI_v3.Planning.Planners
             for (int i = 0; i < finishers.Count; i++)
             {
                 var f = finishers[i];
-                float cost = CombatAPI.GetAbilityAPCost(f);
+                // 실비용 사용(bonus usage 시 0). 원가로 gate/차감하면 무료 능력을 과금해 plan 누락/AP 드리프트.
+                float cost = CombatAPI.GetEffectiveAPCost(f);
                 string r;
                 bool canUse = cost <= currentAP && CombatAPI.CanUseAbilityOn(f, targetWrapper, out r);
                 if (!canUse) continue;
@@ -694,7 +695,7 @@ namespace CompanionAI_v3.Planning.Planners
             for (int i = 0; i < situation.AvailableSpecialAbilities.Count; i++)
             {
                 var a = situation.AvailableSpecialAbilities[i];
-                float cost = CombatAPI.GetAbilityAPCost(a);
+                float cost = CombatAPI.GetEffectiveAPCost(a);
                 if (cost > currentAP) continue;
                 float score = SpecialAbilityHandler.GetSpecialAbilityEffectivenessScore(a, target, enemies);
                 if (score > 0) scoredAbilities.Add((a, score, cost));
@@ -775,7 +776,8 @@ namespace CompanionAI_v3.Planning.Planners
 
                 foreach (var attack in rangedAttacks)
                 {
-                    float cost = CombatAPI.GetAbilityAPCost(attack);
+                    // 실비용 사용(bonus usage 시 0). 원가로 gate/차감하면 무료 공격을 과금해 plan 누락/AP 드리프트.
+                    float cost = CombatAPI.GetEffectiveAPCost(attack);
                     if (cost > remainingAP) continue;
 
                     // ★ v3.8.64: AoESafetyChecker 통합 (간이 3타일 체크 → 게임 기반 스캐터 패턴)

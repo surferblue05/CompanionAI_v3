@@ -81,7 +81,8 @@ namespace CompanionAI_v3.Planning.Planners
             for (int idx = 0; idx < scored.Count; idx++)
             {
                 var ability = scored[idx].Ability;
-                float cost = CombatAPI.GetAbilityAPCost(ability);
+                // 실비용 사용(bonus usage 시 0). 원가로 gate/차감하면 무료 궁극기를 과금해 plan 누락/AP 드리프트.
+                float cost = CombatAPI.GetEffectiveAPCost(ability);
 
                 // 0 코스트가 아닌 경우 AP 체크
                 if (cost > 0 && cost > remainingAP)
@@ -774,7 +775,7 @@ namespace CompanionAI_v3.Planning.Planners
                 string heroicGuid = GetBuffGuid(heroic);
                 if (plannedBuffGuids != null && plannedBuffGuids.Contains(heroicGuid)) continue;
 
-                float cost = CombatAPI.GetAbilityAPCost(heroic);
+                float cost = CombatAPI.GetEffectiveAPCost(heroic);
                 if (cost > remainingAP) continue;
 
                 if (AbilityDatabase.IsSingleUse(heroic) &&

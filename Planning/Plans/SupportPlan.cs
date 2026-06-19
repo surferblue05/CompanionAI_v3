@@ -742,7 +742,8 @@ namespace CompanionAI_v3.Planning.Plans
 
                 foreach (var attack in rangedAttacks)
                 {
-                    float cost = CombatAPI.GetAbilityAPCost(attack);
+                    // 실비용 사용(bonus usage 시 0). 원가로 gate/차감하면 무료 공격을 과금해 plan 누락/AP 드리프트.
+                    float cost = CombatAPI.GetEffectiveAPCost(attack);
                     if (cost > remainingAP) continue;
 
                     // ★ v3.8.64: AoESafetyChecker 통합 (간이 3타일 체크 → 게임 기반 스캐터 패턴)

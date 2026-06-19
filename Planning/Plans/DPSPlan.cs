@@ -1336,7 +1336,8 @@ namespace CompanionAI_v3.Planning.Plans
             // 1타 킬 가능한 마무리 스킬 우선
             foreach (var finisher in finishers)
             {
-                float cost = CombatAPI.GetAbilityAPCost(finisher);
+                // 실비용 사용(bonus usage 시 0). 원가로 gate/차감하면 무료 finisher 를 과금해 plan 누락/AP 드리프트.
+                float cost = CombatAPI.GetEffectiveAPCost(finisher);
                 if (cost > remainingAP) continue;
 
                 bool canKill = CombatAPI.CanKillInOneHit(finisher, target);
@@ -1358,7 +1359,7 @@ namespace CompanionAI_v3.Planning.Plans
             // 1타 킬 불가능해도 낮은 HP 적에게 사용
             foreach (var finisher in finishers)
             {
-                float cost = CombatAPI.GetAbilityAPCost(finisher);
+                float cost = CombatAPI.GetEffectiveAPCost(finisher);
                 if (cost > remainingAP) continue;
 
                 string reason;
