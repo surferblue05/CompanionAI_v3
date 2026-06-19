@@ -118,8 +118,13 @@ namespace CompanionAI_v3.Analysis
         /// <summary>★ v3.18.4: 전투원 아군 (사역마 제외) — 버프/힐/서포트 타겟팅용</summary>
         public List<BaseUnitEntity> CombatantAllies { get; set; } = new List<BaseUnitEntity>();
 
-        /// <summary>가장 가까운 적과의 거리</summary>
+        /// <summary>가장 가까운 적과의 거리 (미터). 타일 단위 비교는 NearestEnemyDistanceTiles 사용.</summary>
         public float NearestEnemyDistance { get; set; }
+
+        /// <summary>NearestEnemyDistance(미터)의 타일 환산값. MinSafeDistance(타일) 등 타일 임계값과의
+        /// 안전 비교 전용 — CombatCache.GetDistance 가 미터(타일×GridCellSize)를 반환하므로 타일 값과
+        /// 직접 비교하면 ~×1.35 "더 안전" 오판이 발생한다.</summary>
+        public float NearestEnemyDistanceTiles => CombatAPI.MetersToTiles(NearestEnemyDistance);
 
         /// <summary>가장 가까운 적</summary>
         public BaseUnitEntity NearestEnemy { get; set; }

@@ -493,10 +493,10 @@ namespace CompanionAI_v3.Planning.Plans
                 string retreatReason = "";
 
                 // 기존: 적이 가까우면 후퇴
-                if (situation.NearestEnemy != null && situation.NearestEnemyDistance < situation.MinSafeDistance * 1.2f)
+                if (situation.NearestEnemy != null && situation.NearestEnemyDistanceTiles < situation.MinSafeDistance * 1.2f)
                 {
                     needsRetreat = true;
-                    retreatReason = $"enemy too close ({situation.NearestEnemyDistance:F1}m)";
+                    retreatReason = $"enemy too close ({situation.NearestEnemyDistanceTiles:F1}t)";
                 }
 
                 // ★ v3.2.25: 전선 앞(0m 이상)에 있으면 후퇴 필요

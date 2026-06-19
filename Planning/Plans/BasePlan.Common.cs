@@ -235,7 +235,7 @@ namespace CompanionAI_v3.Planning.Plans
             if (safetyWeight < 0.4f) return false;  // Tank는 무시
 
             // 위험 상황 또는 적이 가까우면 true
-            return situation.IsInDanger || situation.NearestEnemyDistance < situation.MinSafeDistance;
+            return situation.IsInDanger || situation.NearestEnemyDistanceTiles < situation.MinSafeDistance;
         }
 
         /// <summary>

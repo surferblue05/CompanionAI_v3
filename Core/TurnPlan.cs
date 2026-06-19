@@ -239,10 +239,10 @@ namespace CompanionAI_v3.Core
             // 2-2. 원거리 캐릭터 위협 상황 변화
             if (currentSituation.PrefersRanged && Priority != TurnPriority.Retreat)
             {
-                if (InitialNearestEnemyDistance > currentSituation.MinSafeDistance &&
-                    currentSituation.NearestEnemyDistance <= currentSituation.MinSafeDistance)
+                if (CombatAPI.MetersToTiles(InitialNearestEnemyDistance) > currentSituation.MinSafeDistance &&
+                    currentSituation.NearestEnemyDistanceTiles <= currentSituation.MinSafeDistance)
                 {
-                    Log.Engine.Info($"[TurnPlan] Replan needed: Enemy closed in (was {InitialNearestEnemyDistance:F1}m, now {currentSituation.NearestEnemyDistance:F1}m)");
+                    Log.Engine.Info($"[TurnPlan] Replan needed: Enemy closed in (was {CombatAPI.MetersToTiles(InitialNearestEnemyDistance):F1}t, now {currentSituation.NearestEnemyDistanceTiles:F1}t)");
                     return true;
                 }
             }

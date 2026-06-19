@@ -1059,10 +1059,10 @@ namespace CompanionAI_v3.Planning.Plans
                 bool needsSafeRetreat = false;
                 string retreatReason = "";
 
-                if (situation.NearestEnemy != null && situation.NearestEnemyDistance < situation.MinSafeDistance * 1.2f)
+                if (situation.NearestEnemy != null && situation.NearestEnemyDistanceTiles < situation.MinSafeDistance * 1.2f)
                 {
                     needsSafeRetreat = true;
-                    retreatReason = $"enemy too close ({situation.NearestEnemyDistance:F1}m)";
+                    retreatReason = $"enemy too close ({situation.NearestEnemyDistanceTiles:F1}t)";
                 }
 
                 // ★ v3.110.18: Frontline 제거 — 아군 평균보다 전진한 상태면 후퇴

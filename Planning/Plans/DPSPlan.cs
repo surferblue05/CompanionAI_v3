@@ -1159,10 +1159,10 @@ namespace CompanionAI_v3.Planning.Plans
                 bool needsSafeRetreat = false;
                 string retreatReason = "";
 
-                if (situation.NearestEnemy != null && situation.NearestEnemyDistance < situation.MinSafeDistance)
+                if (situation.NearestEnemy != null && situation.NearestEnemyDistanceTiles < situation.MinSafeDistance)
                 {
                     needsSafeRetreat = true;
-                    retreatReason = $"enemy inside MinSafe ({situation.NearestEnemyDistance:F1} < {situation.MinSafeDistance:F1})";
+                    retreatReason = $"enemy inside MinSafe ({situation.NearestEnemyDistanceTiles:F1} < {situation.MinSafeDistance:F1})";
                 }
 
                 if (needsSafeRetreat)

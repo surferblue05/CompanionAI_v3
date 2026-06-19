@@ -960,7 +960,7 @@ namespace CompanionAI_v3.Planning.Planners
             if (nearestEnemy == null) return null;
 
             // ★ v3.0.61: 현재 위치가 이미 안전 거리 이상이면 후퇴 불필요
-            if (situation.NearestEnemyDistance >= situation.MinSafeDistance)
+            if (situation.NearestEnemyDistanceTiles >= situation.MinSafeDistance)
             {
                 if (Main.IsDebugEnabled) Log.Planning.Debug($"[MovementPlanner] {unit.CharacterName}: Already safe, no retreat needed");
                 return null;
@@ -1246,7 +1246,7 @@ namespace CompanionAI_v3.Planning.Planners
             if (nearestEnemy == null) return null;
 
             // ★ v3.0.61: 현재 위치가 이미 안전 거리 이상이면 이동 불필요
-            if (situation.NearestEnemyDistance >= situation.MinSafeDistance)
+            if (situation.NearestEnemyDistanceTiles >= situation.MinSafeDistance)
             {
                 if (Main.IsDebugEnabled) Log.Planning.Debug($"[MovementPlanner] {unit.CharacterName}: Already safe (dist={situation.NearestEnemyDistance:F1}m >= {situation.MinSafeDistance}m), no retreat needed");
                 return null;
@@ -1322,7 +1322,7 @@ namespace CompanionAI_v3.Planning.Planners
             if (rangePreference != Settings.RangePreference.PreferRanged)
                 return false;
 
-            return situation.NearestEnemyDistance < situation.MinSafeDistance;
+            return situation.NearestEnemyDistanceTiles < situation.MinSafeDistance;
         }
 
         /// <summary>

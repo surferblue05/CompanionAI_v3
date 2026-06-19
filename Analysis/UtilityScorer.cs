@@ -607,9 +607,9 @@ namespace CompanionAI_v3.Analysis
                 }
 
                 // 근접 적 거리 기반 추가 감점
-                if (situation.NearestEnemyDistance < situation.MinSafeDistance)
+                if (situation.NearestEnemyDistanceTiles < situation.MinSafeDistance)
                 {
-                    float proximityPenalty = (situation.MinSafeDistance - situation.NearestEnemyDistance) * CLEARMP_PROXIMITY_RATE * safetyWeight;
+                    float proximityPenalty = (situation.MinSafeDistance - situation.NearestEnemyDistanceTiles) * CLEARMP_PROXIMITY_RATE * safetyWeight;
                     score -= proximityPenalty;
                 }
             }
@@ -1503,7 +1503,7 @@ namespace CompanionAI_v3.Analysis
             if (situation.IsInDanger) return true;
 
             // 적이 안전 거리보다 가까우면 이동 필요
-            if (situation.NearestEnemyDistance < situation.MinSafeDistance) return true;
+            if (situation.NearestEnemyDistanceTiles < situation.MinSafeDistance) return true;
 
             return false;
         }
