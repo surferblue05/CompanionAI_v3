@@ -525,9 +525,6 @@ namespace CompanionAI_v3.Analysis
                 }
             }
 
-            // ★ v3.9.26: NormalHittableCount 설정 — DangerousAoE 제외한 일반 공격 hittable 수
-            situation.NormalHittableCount = normalHittableCount;
-
             // ★ v3.8.14: 근접 선호 캐릭터의 경우, 폴백 전에 근접 공격으로 타격 가능한 적 저장
             // 폴백이 원거리 공격을 추가하면, 근접 캐릭터가 "공격 가능"으로 판단하여 접근 안 함
             // MeleeHittableEnemies는 "실제 근접 공격이 닿는 적"을 추적
@@ -598,6 +595,9 @@ namespace CompanionAI_v3.Analysis
                                 }
 
                                 situation.HittableEnemies.Add(enemy);
+                                // 폴백으로 추가된 적도 NormalHittableCount 에 반영 — DangerousAoE(고폭발 점표적)만
+                                // 제외. 누락 시 NeedsReplan/TacticalOptionEvaluator 가 hittable=0 으로 오판한다.
+                                if (!AbilityDatabase.IsDangerousAoE(attack)) normalHittableCount++;
                                 Log.Analysis.Debug($"[Analyzer] {enemy.CharacterName} hittable by {attack.Name} (fallback)");
 
                                 // ★ 폴백으로 찾은 공격을 AvailableAttacks에 추가
@@ -621,6 +621,10 @@ namespace CompanionAI_v3.Analysis
             {
                 Log.Analysis.Debug($"[Analyzer] Hittable: {situation.HittableEnemies.Count}/{situation.Enemies?.Count ?? 0}");
             }
+
+            // NormalHittableCount — DangerousAoE 제외한 일반 공격 hittable 수. 폴백이 적을 추가한 뒤
+            // 최종 집계해야 한다(폴백 전에 set 하면 폴백 추가분이 누락되어 hittable=0 으로 오판).
+            situation.NormalHittableCount = normalHittableCount;
 
             // ★ v3.1.21: 최적 타겟 선택 - TargetScorer 기반 Role별 가중치 적용
             var role = situation.CharacterSettings?.Role ?? AIRole.Auto;

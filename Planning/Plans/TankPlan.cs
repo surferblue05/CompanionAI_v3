@@ -187,12 +187,6 @@ namespace CompanionAI_v3.Planning.Plans
                             $"(enemies={bestOption.EnemiesAffected}, targetingAllies={bestOption.EnemiesTargetingAllies}, " +
                             $"requiresMove={bestOption.RequiresMove}, score={bestOption.Score:F0})");
 
-                        // ★ v3.5.10: 도발 대상 예약
-                        if (primaryTauntTarget != null)
-                        {
-                            TeamBlackboard.Instance.ReserveTaunt(primaryTauntTarget);
-                        }
-
                         // 이동이 필요하면 먼저 이동 계획
                         if (bestOption.RequiresMove)
                         {
@@ -263,6 +257,11 @@ namespace CompanionAI_v3.Planning.Plans
                             if (tauntAction != null)
                             {
                                 tauntAction.ReservedTarget = primaryTauntTarget;
+                                // 예약은 실제로 도발을 enqueue 하는 이 시점에만 — reserve/enqueue 원자화.
+                                // AP 부족(위 apCost 체크) 또는 단일타겟 폴백 실패로 도발이 enqueue 되지 않으면
+                                // 예약도 하지 않는다(예약은 라운드 끝까지 남아 다른 Tank 의 같은 적 도발을 막는다).
+                                if (primaryTauntTarget != null)
+                                    TeamBlackboard.Instance.ReserveTaunt(primaryTauntTarget);
                                 actions.Add(tauntAction);
                             }
                         }
