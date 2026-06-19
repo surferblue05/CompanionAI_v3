@@ -1940,5 +1940,6 @@ Style examples (use as rough guides, NOT templates -- be creative and vary your 
         public string Text;
         public float Timestamp;
         public MessageCategory Category; // ★ v3.66.0: Color-coded message categories
+        public int Id; // ★ 스트리밍 추적용 고유 Id (0=미할당). 인덱스/타임스탬프 시프트·충돌에 안전한 추적.
     }
 }

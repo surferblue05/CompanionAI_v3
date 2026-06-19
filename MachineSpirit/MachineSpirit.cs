@@ -320,14 +320,94 @@ namespace CompanionAI_v3.MachineSpirit
                 _chatHistory.RemoveAt(0);
         }
 
-        // 스트리밍 콜백이 늦게 도착했을 때, 그 사이 히스토리가 Clear/변형(성격·모델 전환, 수동 클리어)됐는지
-        // 검사한다. LLMClient.Reset() 은 진행 중 코루틴을 멈추지 않으므로 stale index 로 접근하면
-        // ArgumentOutOfRange 또는 엉뚱한 메시지 오염 발생 → 범위 + 비-User + Timestamp 일치할 때만 placeholder 갱신.
-        private static bool IsPlaceholderAlive(int idx, float ts) =>
-            idx >= 0
-            && idx < _chatHistory.Count
-            && !_chatHistory[idx].IsUser
-            && _chatHistory[idx].Timestamp == ts;
+        // ════════════════════════════════════════════════════════════
+        // ★ Id 기반 스트리밍 추적 — 고정 인덱스+ts 의 시프트/충돌 취약성 해결.
+        //   placeholder 를 고유 Id 로 추적 → 히스토리 변형(trim/clear/add)·ts 충돌 무관하게 정확한
+        //   메시지에 append, 사라졌으면 안전 중단. 빈/[SKIP] placeholder 는 정리(고아 방지).
+        // ════════════════════════════════════════════════════════════
+
+        private static int _nextMsgId = 1;
+
+        private static int AddAssistantPlaceholder(MessageCategory category)
+        {
+            int id = _nextMsgId++;
+            _chatHistory.Add(new ChatMessage { Id = id, IsUser = false, Text = "", Timestamp = UnityEngine.Time.time, Category = category });
+            return id;
+        }
+
+        private static int FindMsgIndexById(int id)
+        {
+            if (id <= 0) return -1;
+            for (int i = _chatHistory.Count - 1; i >= 0; i--)  // 최근부터 — placeholder 는 보통 끝쪽
+                if (_chatHistory[i].Id == id) return i;
+            return -1;
+        }
+
+        private static void AppendToMsgById(int id, string tokens)
+        {
+            int idx = FindMsgIndexById(id);
+            if (idx < 0) return;
+            var msg = _chatHistory[idx];   // struct → read-modify-writeback
+            msg.Text += tokens;
+            _chatHistory[idx] = msg;
+        }
+
+        /// <summary>완료 처리 — StripNarration 후 빈/[SKIP]이면 제거(고아 방지). 살아남은 최종 텍스트 반환(제거 시 null).</summary>
+        private static string FinalizeStreamedMsg(int id)
+        {
+            int idx = FindMsgIndexById(id);
+            if (idx < 0) return null;
+            var msg = _chatHistory[idx];
+            msg.Text = LLMClient.StripNarration(msg.Text);
+            _chatHistory[idx] = msg;
+            if (string.IsNullOrWhiteSpace(msg.Text) || msg.Text.Trim().Contains("[SKIP]"))
+            {
+                _chatHistory.RemoveAt(idx);   // 빈/[SKIP] 고아 제거
+                return null;
+            }
+            return msg.Text;
+        }
+
+        private static void RemoveMsgByIdIfEmpty(int id)
+        {
+            int idx = FindMsgIndexById(id);
+            if (idx < 0) return;
+            if (string.IsNullOrEmpty(_chatHistory[idx].Text?.Trim()))
+                _chatHistory.RemoveAt(idx);
+        }
+
+        /// <summary>
+        /// ★ Ollama 스트리밍 응답 공통 헬퍼 — placeholder(Id) 추가 + onToken/onComplete/onError 표준화.
+        /// 9개 응답 경로의 중복(~40줄×9) 제거 + Id 추적으로 잘림/고아 버그 해결. summarize: 채팅 경로만 true.
+        /// </summary>
+        private static void StartOllamaStream(List<LLMClient.ChatMessage> messages, MessageCategory category, bool summarize,
+            Action<string> onFinalText = null, Action onAlways = null)
+        {
+            int id = AddAssistantPlaceholder(category);
+            CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
+                Config, messages,
+                onToken: tokens =>
+                {
+                    AppendToMsgById(id, tokens);
+                    ChatWindow.SetThinking(false);
+                },
+                onComplete: () =>
+                {
+                    string finalText = FinalizeStreamedMsg(id);   // 빈/[SKIP] 이면 null
+                    ChatWindow.SetThinking(false);
+                    if (!string.IsNullOrEmpty(finalText)) onFinalText?.Invoke(finalText);
+                    if (summarize) MaybeSummarize();
+                    onAlways?.Invoke();
+                },
+                onError: error =>
+                {
+                    RemoveMsgByIdIfEmpty(id);
+                    ChatWindow.SetThinking(false);
+                    Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
+                    onAlways?.Invoke();
+                }
+            ));
+        }
 
         public static void OnUserMessage(string text)
         {
@@ -358,49 +438,8 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                // ★ Streaming: add empty placeholder, update it token by token
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-                bool PlaceholderAlive() => IsPlaceholderAlive(responseIdx, responseTs);
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
-                    {
-                        if (!PlaceholderAlive()) return;
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false); // Clear "Cogitating..." on first token
-                    },
-                    onComplete: () =>
-                    {
-                        if (PlaceholderAlive())
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        MaybeSummarize();
-                    },
-                    onError: error =>
-                    {
-                        if (PlaceholderAlive())
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                // ★ Streaming (Id 추적): placeholder 추가 + 토큰 append. 잘림/고아 버그 해결 + 중복 제거.
+                StartOllamaStream(messages, MessageCategory.Default, summarize: true);
             }
             else
             {
@@ -451,46 +490,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Combat });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
-                    {
-                        if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; }
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false);
-                    },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, MessageCategory.Combat, summarize: false);
             }
             else
             {
@@ -542,49 +542,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Vox });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
-                    {
-                        if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; }
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false);
-                    },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text) || msg.Text.Trim().Contains("[SKIP]"))
-                            {
-                                _chatHistory.RemoveAt(responseIdx);
-                                Log.MachineSpirit.Debug("[MachineSpirit] Dialogue: skipped (uninteresting)");
-                            }
-                        }
-                        ChatWindow.SetThinking(false);
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, MessageCategory.Vox, summarize: false);
             }
             else
             {
@@ -640,38 +598,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Vox });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens => { if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; } var msg = _chatHistory[responseIdx]; msg.Text += tokens; _chatHistory[responseIdx] = msg; ChatWindow.SetThinking(false); },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text) || msg.Text.Trim().Contains("[SKIP]"))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, MessageCategory.Vox, summarize: false);
             }
             else
             {
@@ -707,38 +634,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Vox });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens => { if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; } var msg = _chatHistory[responseIdx]; msg.Text += tokens; _chatHistory[responseIdx] = msg; ChatWindow.SetThinking(false); },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text) || msg.Text.Trim().Contains("[SKIP]"))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, MessageCategory.Vox, summarize: false);
             }
             else
             {
@@ -783,46 +679,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Scan });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
-                    {
-                        if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; }
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false);
-                    },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, MessageCategory.Scan, summarize: false);
             }
             else
             {
@@ -942,47 +799,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = category });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
-                    {
-                        if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; }
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false);
-                    },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        MaybeSummarize();
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, category, summarize: true);
             }
             else
             {
@@ -1086,46 +903,7 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Greeting });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
-                    {
-                        if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; }
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false);
-                    },
-                    onComplete: () =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                    },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                StartOllamaStream(messages, MessageCategory.Greeting, summarize: false);
             }
             else
             {
@@ -1244,62 +1022,19 @@ namespace CompanionAI_v3.MachineSpirit
 
             if (Config.Provider == ApiProvider.Ollama)
             {
-                _chatHistory.Add(new ChatMessage { IsUser = false, Text = "", Timestamp = Time.time, Category = MessageCategory.Scan });
-                int responseIdx = _chatHistory.Count - 1;
-                float responseTs = _chatHistory[responseIdx].Timestamp;
-
-                CoroutineRunner.Start(LLMClient.SendOllamaStreaming(
-                    Config, messages,
-                    onToken: tokens =>
+                // ★ Id 추적 + idle/vision 부수효과 복원(onFinalText: 활동시간·타이머·비전관찰, onAlways: pending 해제).
+                StartOllamaStream(messages, MessageCategory.Scan, summarize: false,
+                    onFinalText: text =>
                     {
-                        if (!IsPlaceholderAlive(responseIdx, responseTs)) { ChatWindow.SetThinking(false); return; }
-                        var msg = _chatHistory[responseIdx];
-                        msg.Text += tokens;
-                        _chatHistory[responseIdx] = msg;
-                        ChatWindow.SetThinking(false);
-                    },
-                    onComplete: () =>
-                    {
-                        ChatWindow.SetThinking(false);
-                        _idleVisionPending = false;
-
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
+                        _lastActivityTime = Time.time;
+                        ResetIdleTimers();
+                        if (isVision)
                         {
-                            var msg = _chatHistory[responseIdx];
-                            // ★ v3.74.0: Strip narration patterns from RP models
-                            msg.Text = LLMClient.StripNarration(msg.Text);
-                            _chatHistory[responseIdx] = msg;
-
-                            if (string.IsNullOrWhiteSpace(msg.Text) || msg.Text.Trim().Contains("[SKIP]"))
-                            {
-                                _chatHistory.RemoveAt(responseIdx);
-                                Log.MachineSpirit.Debug("[MachineSpirit] Idle: skipped (nothing interesting)");
-                            }
-                            else
-                            {
-                                _lastActivityTime = Time.time;
-                                ResetIdleTimers();
-                                if (isVision && !string.IsNullOrEmpty(msg.Text))
-                                {
-                                    string summary = msg.Text.Length > 80 ? msg.Text.Substring(0, 80) + "..." : msg.Text;
-                                    GameEventCollector.AddEvent(GameEventType.VisionObservation, null, summary);
-                                }
-                            }
+                            string summary = text.Length > 80 ? text.Substring(0, 80) + "..." : text;
+                            GameEventCollector.AddEvent(GameEventType.VisionObservation, null, summary);
                         }
                     },
-                    onError: error =>
-                    {
-                        if (IsPlaceholderAlive(responseIdx, responseTs))
-                        {
-                            var msg = _chatHistory[responseIdx];
-                            if (string.IsNullOrEmpty(msg.Text?.Trim()))
-                                _chatHistory.RemoveAt(responseIdx);
-                        }
-                        ChatWindow.SetThinking(false);
-                        _idleVisionPending = false;
-                        Log.MachineSpirit.Debug($"[MachineSpirit] LLM error (silent): {error}");
-                    }
-                ));
+                    onAlways: () => _idleVisionPending = false);
             }
             else
             {
