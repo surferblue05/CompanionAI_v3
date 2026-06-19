@@ -191,6 +191,10 @@ namespace CompanionAI_v3.Settings
                     }
                     else
                     {
+                        // settings_{gameId}.json 에 "CharacterSettings": null 토큰이 있으면 Newtonsoft 가 멤버
+                        // 초기화자를 null 로 덮어써, GetOrCreateSettings 가 매 AI 턴 NRE 를 던진다. 비-null 보장.
+                        if (_cached.CharacterSettings == null)
+                            _cached.CharacterSettings = new Dictionary<string, CharacterSettings>();
                         // 정상 로드 → 이번 세션 실패 기록 해제 (디스크 .corrupted-* marker 는 Save 가 직접 검사)
                         _failedGameIds.Remove(gameId);
                         Log.Persistence.Info($"[PerSaveSettings] Loaded {_cached.CharacterSettings?.Count ?? 0} settings from {Path.GetFileName(filePath)} (GameId={gameId})");
@@ -450,6 +454,13 @@ namespace CompanionAI_v3.Settings
                     if (settings != null)
                     {
                         Instance = settings;
+                        // settings.json 에 "MachineSpirit": null / "DefaultSettings": null 같은 명시적 null
+                        // 토큰이 있으면 Newtonsoft 가 멤버 초기화자를 null 로 덮어쓴다. 그러면 try 밖의
+                        // MaxTokens 마이그레이션(아래)에서 NRE → 모드 로드 자체가 실패한다. 역직렬화 직후 비-null 보장.
+                        if (Instance.MachineSpirit == null)
+                            Instance.MachineSpirit = new MachineSpiritConfig();
+                        if (Instance.DefaultSettings == null)
+                            Instance.DefaultSettings = new CharacterSettings();
                         _loadFailed = false;
                         Log.Persistence.Info("Settings loaded successfully");
                     }
