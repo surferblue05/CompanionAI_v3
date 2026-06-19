@@ -20,6 +20,10 @@ namespace CompanionAI_v3.MachineSpirit
         private const int SUMMARY_THRESHOLD = 30; // Summarize when history exceeds this
         private const int SUMMARY_WINDOW = 20;    // Number of old messages to summarize
 
+        // ★ 채팅 영속화 토글 — false: 매 세션 새 대화(저장/로드 안 함). 세션 종속 플레이버라 fresh 가 기본.
+        //   true 로 바꾸면 chat_history.json 에 저장/로드 (단 모델 JSON 래핑 오염이 재유입될 위험 있음).
+        private static readonly bool PersistChatHistory = false;
+
         private static readonly List<ChatMessage> _chatHistory = new List<ChatMessage>();
         private static MachineSpiritConfig Config => Main.Settings?.MachineSpirit;
         private static float _lastSpontaneousTime;
@@ -173,7 +177,7 @@ namespace CompanionAI_v3.MachineSpirit
 
         public static void SaveChatHistory()
         {
-            if (_chatHistory.Count == 0) return;
+            if (!PersistChatHistory || _chatHistory.Count == 0) return;
             try
             {
                 var data = new SavedChat
@@ -193,6 +197,7 @@ namespace CompanionAI_v3.MachineSpirit
 
         public static void LoadChatHistory()
         {
+            if (!PersistChatHistory) return;
             try
             {
                 string path = GetChatHistoryPath();

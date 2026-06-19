@@ -389,6 +389,10 @@ namespace CompanionAI_v3.MachineSpirit
         {
             if (string.IsNullOrEmpty(text)) return text;
 
+            // ★ 모델이 응답을 {"response":"..."} JSON 으로 감싸는 습성 방어 — 안쪽 텍스트만 추출 (잘린 JSON 포함).
+            text = UnwrapJsonResponse(text);
+            if (string.IsNullOrEmpty(text)) return text;
+
             // Remove *action descriptions* (asterisk-wrapped text)
             text = System.Text.RegularExpressions.Regex.Replace(text, @"\*[^*]+\*", "");
 
@@ -410,6 +414,35 @@ namespace CompanionAI_v3.MachineSpirit
             }
 
             return sb.ToString().Trim();
+        }
+
+        /// <summary>
+        /// 모델이 응답을 {"response":"..."} (또는 content/message/text/reply) JSON 으로 감쌀 때 안쪽 텍스트만 추출.
+        /// 프롬프트 규칙으로 1차 차단하되, 모델이 무시할 경우의 안전망. 스트리밍 중 잘린 JSON 도 관대 처리.
+        /// </summary>
+        internal static string UnwrapJsonResponse(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            string t = text.TrimStart();
+            if (t.Length == 0 || t[0] != '{') return text;  // JSON 봉투 아님 — 그대로
+
+            // 1) 정상 JSON 파싱 시도
+            try
+            {
+                var obj = Newtonsoft.Json.Linq.JObject.Parse(t);
+                var field = obj["response"] ?? obj["content"] ?? obj["message"] ?? obj["text"] ?? obj["reply"];
+                if (field != null && field.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                    return field.ToString();
+            }
+            catch { /* 잘리거나 malformed — 아래 lenient 추출로 폴백 */ }
+
+            // 2) lenient: "response":"..." 안쪽만 추출 (스트리밍 중간 끊김 대응)
+            var m = System.Text.RegularExpressions.Regex.Match(t, "\"(?:response|content|message|text|reply)\"\\s*:\\s*\"");
+            if (!m.Success) return text;
+            string inner = t.Substring(m.Index + m.Length).TrimEnd();
+            if (inner.EndsWith("}")) inner = inner.Substring(0, inner.Length - 1).TrimEnd();
+            if (inner.EndsWith("\"")) inner = inner.Substring(0, inner.Length - 1);
+            return inner.Replace("\\n", "\n").Replace("\\t", "\t").Replace("\\\"", "\"");
         }
 
         // ════════════════════════════════════════════════════════════
