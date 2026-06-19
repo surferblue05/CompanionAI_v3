@@ -11,7 +11,7 @@ namespace CompanionAI_v3.Settings
     internal static class SC
     {
         // ─── 프레임 분산 (Phase B): 무거운 위치 평가를 여러 프레임에 나눠 첫턴 freeze 방지 ───
-        public const bool  EnableFrameSpreadEval = false;  // 기본 OFF — ON 시 PrecomputePositions phase 활성(검증 후 ON)
+        public const bool  EnableFrameSpreadEval = true;   // ★ 기본 ON (v3.117.98 인게임 로그 검증 — precompute↔plan 캐시 공유 정상, 이중계산 없음, ~72fps 유지=freeze 없음). 문제 시 false.
         public const float FrameSpreadBudgetMs   = 12f;    // 프레임당 평가 예산(ms). 클수록 빠르나 fps↓
         public const int   FrameSpreadMaxFrames  = 600;    // 타임아웃 가드 — 초과 시 강제 plan 진행
 
