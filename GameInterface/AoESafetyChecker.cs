@@ -44,17 +44,21 @@ namespace CompanionAI_v3.GameInterface
             BaseUnitEntity caster,
             Vector3 targetPosition,
             List<BaseUnitEntity> allUnits,
-            int minEnemiesRequired = 0)
+            int minEnemiesRequired = 0,
+            Vector3? casterPosition = null)
         {
             var score = new AoEScore { Position = targetPosition, IsSafe = true };
 
             float aoERadius = CombatAPI.GetAoERadius(ability);
             if (aoERadius <= 0) aoERadius = 3f;
 
-            // ★ Fix 3: Reject positions where caster is within own AoE blast radius (grenade self-damage prevention)
+            // 시전자가 자기 AoE 폭발 반경 안에 들어가는 위치는 거부(수류탄 자해 방지).
+            // 이동 후 시전(move-then-AoE)에서는 이동할 목적지(casterPosition)에서 판정해야 한다.
+            // casterPosition 이 null 이면 현재 위치 — 예전엔 항상 현재 위치로만 판정해 이동 후 자해를 놓쳤다.
             if (caster != null)
             {
-                float casterDist = CombatAPI.GetDistanceInTiles(targetPosition, caster);
+                Vector3 casterPos = casterPosition ?? caster.Position;
+                float casterDist = CombatAPI.MetersToTiles(Vector3.Distance(targetPosition, casterPos));
                 if (casterDist <= aoERadius)
                 {
                     score.IsSafe = false;
@@ -294,7 +298,8 @@ namespace CompanionAI_v3.GameInterface
                 float distFromPos = CombatAPI.MetersToTiles(Vector3.Distance(fromPosition, enemy.Position));
                 if (distFromPos > abilityRange) continue;
 
-                var score = EvaluateAoEPosition(ability, caster, enemy.Position, allUnits);
+                // 자기 폭발 판정도 fromPosition(이동 목적지) 기준으로 — caster 현재 위치가 아님
+                var score = EvaluateAoEPosition(ability, caster, enemy.Position, allUnits, casterPosition: fromPosition);
                 if (score.IsSafe && score.EnemiesHit >= minEnemiesRequired)
                     candidates.Add(score);
             }
@@ -316,7 +321,8 @@ namespace CompanionAI_v3.GameInterface
                     if (Analysis.BattlefieldGrid.Instance.IsValid && !Analysis.BattlefieldGrid.Instance.IsWalkable(center))
                         continue;
 
-                    var score = EvaluateAoEPosition(ability, caster, center, allUnits);
+                    // 자기 폭발 판정도 fromPosition(이동 목적지) 기준으로
+                    var score = EvaluateAoEPosition(ability, caster, center, allUnits, casterPosition: fromPosition);
                     if (score.IsSafe && score.EnemiesHit >= minEnemiesRequired)
                         candidates.Add(score);
                 }

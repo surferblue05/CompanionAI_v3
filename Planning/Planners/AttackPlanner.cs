@@ -609,10 +609,12 @@ namespace CompanionAI_v3.Planning.Planners
         {
             if (target == null || situation.Allies == null) return 0;
 
+            // radius 는 GetAoERadius 기반 타일 값. GetDistance 는 미터를 반환하므로 타일로 변환해 비교해야
+            // 한다(미터로 비교하면 ~1.35배 커서 폭발 반경 안의 아군을 누락 → 친선 사격 허용).
             return situation.Allies.Count(ally =>
                 ally != null &&
                 !ally.LifeState.IsDead &&
-                CombatAPI.GetDistance(target, ally) <= radius);
+                CombatAPI.MetersToTiles(CombatAPI.GetDistance(target, ally)) <= radius);
         }
 
         /// <summary>
