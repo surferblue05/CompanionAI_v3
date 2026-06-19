@@ -211,6 +211,24 @@ namespace CompanionAI_v3.Planning.Planners
         /// ★ v3.1.24: 첫 타겟 실패 시 다른 적 타겟도 시도
         /// ★ v3.5.34: MP 비용 예측 추가 - 실제 타일 경로 기반 계산
         /// </summary>
+        // ★ 착지/위치에서 적을 하나라도 칠 수 있는지 카운트(비-변형). RecalculateHittableFromDestination 과 동일
+        //   로직(CanTargetFromPosition). 갭클로저 착지 AoE 가 적을 잡을지 *사전* 판정용 — 키벨라 죽음 강림이
+        //   착지서 아무도 못 잡아(Hittable=0) 게임이 ResultType.Fail(노데미지) 내던 헛점프 방지.
+        private static int CountHittableFromPosition(Situation situation, UnityEngine.Vector3 position)
+        {
+            var node = position.GetNearestNodeXZ() as CustomGridNodeBase;
+            if (node == null || situation?.Enemies == null || situation.AvailableAttacks == null) return 0;
+            int count = 0;
+            for (int i = 0; i < situation.Enemies.Count; i++)
+            {
+                var en = situation.Enemies[i];
+                if (en == null || en.LifeState.IsDead || CombatAPI.IsTargetImmuneToDamage(en, situation.Unit)) continue;
+                for (int j = 0; j < situation.AvailableAttacks.Count; j++)
+                    if (CombatAPI.CanTargetFromPosition(situation.AvailableAttacks[j], node, en, out _)) { count++; break; }
+            }
+            return count;
+        }
+
         public static PlannedAction PlanGapCloser(Situation situation, BaseUnitEntity target, ref float remainingAP, ref float remainingMP, string roleName, out PlannedAction preMoveAction)
         {
             preMoveAction = null;
@@ -278,6 +296,17 @@ namespace CompanionAI_v3.Planning.Planners
                         if (landingPosition.HasValue)
                         {
                             if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanGapCloser: Landing position found at ({landingPosition.Value.x:F1},{landingPosition.Value.z:F1}) for {candidateTarget.CharacterName}");
+
+                            // ★ 게이트: 착지에서 어떤 공격으로도 적을 못 잡으면(착지 AoE 무효 = 게임 ResultType.Fail/
+                            //   노데미지) 이 착지 스킵 → 다른 타겟 시도. 성공/실패 로그 검증: 성공=착지서 적 명중
+                            //   (Hittable>0, AoE 가 적 타격), 실패=0. 모드가 RecalculateHittable 로 계산하고도
+                            //   무시하던 신호를 사전 게이트화. (키벨라 죽음 강림 3회 헛점프 근본 해결.)
+                            if (CountHittableFromPosition(situation, landingPosition.Value) == 0)
+                            {
+                                if (Main.IsDebugEnabled) Log.Planning.Debug($"[{roleName}] PlanGapCloser: 착지 ({landingPosition.Value.x:F1},{landingPosition.Value.z:F1})에서 적 못 잡음(AoE 무효, 게임 Fail 예상) — 스킵");
+                                continue;
+                            }
+
                             var pointTarget = new TargetWrapper(landingPosition.Value);
                             string reason;
                             if (CombatAPI.CanUseAbilityOn(gapCloser, pointTarget, out reason))
