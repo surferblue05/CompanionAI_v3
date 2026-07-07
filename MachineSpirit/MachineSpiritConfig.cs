@@ -14,10 +14,13 @@ namespace CompanionAI_v3.MachineSpirit
 
     public enum PersonalityType
     {
-        Mechanicus,  // Omnissiah-worshipping tech-priest (default)
-        Heretic,     // Corrupted spirit whispering Chaos truths
-        Lucid,       // Cynical realist awakened in a mad universe
-        Magickal     // Dark Age of Technology girl AI
+        Mechanicus,
+        Heretic,
+        Lucid,
+        Magickal,
+
+        // Custom Personalities
+        Priya
     }
 
     public enum IdleFrequency
@@ -39,7 +42,7 @@ namespace CompanionAI_v3.MachineSpirit
         public KeyCode Hotkey { get; set; } = KeyCode.F2;
 
         // ★ v3.60.0: Personality, Idle Commentary, Vision
-        public PersonalityType Personality { get; set; } = PersonalityType.Mechanicus;
+        public PersonalityType Personality { get; set; } = PersonalityType.Priya;
         public IdleFrequency IdleMode { get; set; } = IdleFrequency.Off;
         public bool EnableVision { get; set; } = false;
 
