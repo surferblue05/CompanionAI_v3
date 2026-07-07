@@ -556,37 +556,44 @@ Style examples (use as rough guides, NOT templates -- be creative and vary your 
         };
 
         private static string GetPersonalityBlock(Language lang, PersonalityType personality)
-        {
-            return (personality, lang) switch
-            {
-                // Mechanicus
-                (PersonalityType.Mechanicus, Language.Korean) => PERS_MECHANICUS_KO,
-                (PersonalityType.Mechanicus, Language.Russian) => PERS_MECHANICUS_RU,
-                (PersonalityType.Mechanicus, Language.Japanese) => PERS_MECHANICUS_JA,
-                (PersonalityType.Mechanicus, Language.Chinese) => PERS_MECHANICUS_ZH,
-                (PersonalityType.Mechanicus, _) => PERS_MECHANICUS_EN,
-                // Heretic
-                (PersonalityType.Heretic, Language.Korean) => PERS_HERETIC_KO,
-                (PersonalityType.Heretic, Language.Russian) => PERS_HERETIC_RU,
-                (PersonalityType.Heretic, Language.Japanese) => PERS_HERETIC_JA,
-                (PersonalityType.Heretic, Language.Chinese) => PERS_HERETIC_ZH,
-                (PersonalityType.Heretic, _) => PERS_HERETIC_EN,
-                // Lucid
-                (PersonalityType.Lucid, Language.Korean) => PERS_LUCID_KO,
-                (PersonalityType.Lucid, Language.Russian) => PERS_LUCID_RU,
-                (PersonalityType.Lucid, Language.Japanese) => PERS_LUCID_JA,
-                (PersonalityType.Lucid, Language.Chinese) => PERS_LUCID_ZH,
-                (PersonalityType.Lucid, _) => PERS_LUCID_EN,
-                // Magickal
-                (PersonalityType.Magickal, Language.Korean) => PERS_MAGICKAL_KO,
-                (PersonalityType.Magickal, Language.Russian) => PERS_MAGICKAL_RU,
-                (PersonalityType.Magickal, Language.Japanese) => PERS_MAGICKAL_JA,
-                (PersonalityType.Magickal, Language.Chinese) => PERS_MAGICKAL_ZH,
-                (PersonalityType.Magickal, _) => PERS_MAGICKAL_EN,
-                // Fallback
-                _ => PERS_MECHANICUS_EN
-            };
-        }
+{
+    return (personality, lang) switch
+    {
+        // Mechanicus
+        (PersonalityType.Mechanicus, Language.Korean) => PERS_MECHANICUS_KO,
+        (PersonalityType.Mechanicus, Language.Russian) => PERS_MECHANICUS_RU,
+        (PersonalityType.Mechanicus, Language.Japanese) => PERS_MECHANICUS_JA,
+        (PersonalityType.Mechanicus, Language.Chinese) => PERS_MECHANICUS_ZH,
+        (PersonalityType.Mechanicus, _) => PERS_MECHANICUS_EN,
+
+        // Heretic
+        (PersonalityType.Heretic, Language.Korean) => PERS_HERETIC_KO,
+        (PersonalityType.Heretic, Language.Russian) => PERS_HERETIC_RU,
+        (PersonalityType.Heretic, Language.Japanese) => PERS_HERETIC_JA,
+        (PersonalityType.Heretic, Language.Chinese) => PERS_HERETIC_ZH,
+        (PersonalityType.Heretic, _) => PERS_HERETIC_EN,
+
+        // Lucid
+        (PersonalityType.Lucid, Language.Korean) => PERS_LUCID_KO,
+        (PersonalityType.Lucid, Language.Russian) => PERS_LUCID_RU,
+        (PersonalityType.Lucid, Language.Japanese) => PERS_LUCID_JA,
+        (PersonalityType.Lucid, Language.Chinese) => PERS_LUCID_ZH,
+        (PersonalityType.Lucid, _) => PERS_LUCID_EN,
+
+        // Magickal
+        (PersonalityType.Magickal, Language.Korean) => PERS_MAGICKAL_KO,
+        (PersonalityType.Magickal, Language.Russian) => PERS_MAGICKAL_RU,
+        (PersonalityType.Magickal, Language.Japanese) => PERS_MAGICKAL_JA,
+        (PersonalityType.Magickal, Language.Chinese) => PERS_MAGICKAL_ZH,
+        (PersonalityType.Magickal, _) => PERS_MAGICKAL_EN,
+
+        // Priya (new)
+        (PersonalityType.Priya, _) => PERS_PRIYA_EN,
+
+        // Fallback
+        _ => PERS_MECHANICUS_EN
+    };
+}
 
         private static string GetSystemPrompt()
         {
